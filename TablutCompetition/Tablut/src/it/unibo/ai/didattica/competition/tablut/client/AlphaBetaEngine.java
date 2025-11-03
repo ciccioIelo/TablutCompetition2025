@@ -7,12 +7,14 @@ import java.util.Comparator;
 import java.util.List;
 import java.util.HashMap;
 import java.util.Map;
+import java.util.concurrent.*; // Import per la Parallelizzazione
 import it.unibo.ai.didattica.competition.tablut.domain.Action;
 import it.unibo.ai.didattica.competition.tablut.domain.FastTablutState;
 import it.unibo.ai.didattica.competition.tablut.domain.State.Turn;
 
 /**
  * Contiene la logica di ricerca Alpha-Beta, l'euristica e la gestione della Transposition Table.
+ * Implementa la Fase 1 (Motore Veloce) e la Fase 2 (Parallelizzazione Root Node e Timeout).
  */
 public class AlphaBetaEngine {
 
@@ -28,10 +30,10 @@ public class AlphaBetaEngine {
 
     // --- PESI EURISTICI BILANCIATI (Estratti dall'agente originale) ---
     private static final double[] WEIGHTS = {
-        5000.0, -300.0, -500.0, -50.0, -150.0, 100.0, -800.0, 1.0, 1.0, 80.0, -60.0, -200.0
+            5000.0, -300.0, -500.0, -50.0, -150.0, 100.0, -800.0, 1.0, 1.0, 80.0, -60.0, -200.0
     };
 
-    // --- TRANSPOSITION TABLE e Helper Classes (TranspositionEntry, ActionScore, AlphaBetaResult) ---
+    // --- TRANSPOSITION TABLE e Helper Classes ---
     private Map<String, TranspositionEntry> transpositionTable;
     private static final int EXACT_SCORE = 0;
     private static final int LOWER_BOUND = 1;
@@ -76,14 +78,18 @@ public class AlphaBetaEngine {
     }
 
     private final Turn player;
+    private final ExecutorService executorService;
+    private static final int N_CPUS = Runtime.getRuntime().availableProcessors();
+
 
     public AlphaBetaEngine(Turn player) {
         this.player = player;
         this.transpositionTable = new HashMap<>();
+        this.executorService = Executors.newFixedThreadPool(N_CPUS);
     }
 
     // ----------------------------------------------------------------------
-    // 1. GENERAZIONE E ORDINAMENTO DELLE MOSSE (USA FastTablutState)
+    // 1. GENERAZIONE E ORDINAMENTO DELLE MOSSE
     // ----------------------------------------------------------------------
 
     private List<Action> getLegalMoves(FastTablutState state) {
@@ -96,7 +102,6 @@ public class AlphaBetaEngine {
         List<ActionScore> scoredMoves = new ArrayList<>();
 
         for (Action action : moves) {
-            // Per l'ordinamento, simuliamo la mossa in uno stato temporaneo per valutarla
             FastTablutState nextStateForEval = currentState.clone();
             if (nextStateForEval.applyMove(action)) {
                 int score = evaluateState(nextStateForEval);
@@ -104,7 +109,6 @@ public class AlphaBetaEngine {
             }
         }
 
-        // Se non ci sono mosse valide per qualche errore nella logica apply/generate, usiamo l'ordine esistente
         if(scoredMoves.isEmpty()) return moves;
 
         Collections.sort(scoredMoves, new ActionScoreComparator(currentState.getTurn()));
@@ -118,22 +122,21 @@ public class AlphaBetaEngine {
     }
 
     // ----------------------------------------------------------------------
-    // 2. LOGICA MINIMAX (ITERATIVE DEEPENING)
+    // 2. LOGICA MINIMAX (ITERATIVE DEEPENING e PARALLELIZZAZIONE)
     // ----------------------------------------------------------------------
 
     public Action getBestMove(FastTablutState currentState, int timeoutSeconds) {
 
         long startTime = System.currentTimeMillis();
-        long timeLimit = startTime + (timeoutSeconds * 1000L);
+        final long timeLimit = startTime + (timeoutSeconds * 1000L); // timeLimit is implicitly final
 
         this.transpositionTable.clear();
 
         List<Action> legalMoves = this.getLegalMoves(currentState);
 
         if (legalMoves.isEmpty()) {
-             // L'agente non può muovere, dovrebbe perdere.
-             // Non restituiamo nulla per evitare di inviare mosse invalide.
-             return null;
+            System.out.println("ID: Nessuna mossa legale disponibile. Ritorno null.");
+            return null;
         }
 
         Action bestMoveAtCurrentDepth = legalMoves.get(0);
@@ -145,65 +148,92 @@ public class AlphaBetaEngine {
 
             if (System.currentTimeMillis() >= timeLimit) { break; }
 
-            int alpha = INITIAL_ALPHA;
-            int beta = INITIAL_BETA;
+            long timeRemaining = timeLimit - System.currentTimeMillis();
+            if (timeRemaining <= 100) break;
 
             int currentIterationBestScore = (this.player.equals(Turn.WHITE)) ? MIN_VALUE : MAX_VALUE;
             Action currentIterationBestMove = bestMoveAtCurrentDepth;
 
-            // Ordina le mosse per la ricerca per aumentare l'efficacia del taglio
+            // CATTURA IL VALORE CORRENTE di currentDepth in una variabile final
+            final int searchDepth = currentDepth;
+
+            // Ordina le mosse per la Root Node (MVS - Most Valuable Strategy)
             List<Action> orderedMoves = sortMovesByHeuristic(currentState, legalMoves);
 
-            try {
-                for (Action action : orderedMoves) {
+            // --- PARALLELIZZAZIONE DEL ROOT NODE (Fase 2) ---
+            List<Future<AlphaBetaResult>> futures = new ArrayList<>();
 
-                    if (System.currentTimeMillis() >= timeLimit) {
-                        throw new RuntimeException("Timeout reached in Minimax");
-                    }
+            for (Action action : orderedMoves) {
 
-                    // Clonazione Veloce e Applicazione Mossa (FASE 1)
+                // Crea un Task Callable per ogni mossa candidata
+                Callable<AlphaBetaResult> task = () -> {
                     FastTablutState nextState = currentState.clone();
                     if (!nextState.applyMove(action)) {
-                        continue;
+                        return new AlphaBetaResult(this.player.equals(Turn.WHITE) ? MIN_VALUE : MAX_VALUE, action);
                     }
 
-                    int currentScore;
-                    int depth = currentDepth;
-
+                    // Usiamo searchDepth (final) anziché currentDepth
                     if (this.player.equals(Turn.WHITE)) {
-                        AlphaBetaResult result = minValue(nextState, alpha, beta, depth, currentDepth, timeLimit);
-                        currentScore = result.getScore();
+                        return minValue(nextState, INITIAL_ALPHA, INITIAL_BETA, searchDepth, searchDepth, timeLimit);
+                    } else {
+                        return maxValue(nextState, INITIAL_ALPHA, INITIAL_BETA, searchDepth, searchDepth, timeLimit);
+                    }
+                };
+
+                futures.add(executorService.submit(task));
+            }
+
+            try {
+                // Raccogli i risultati con la gestione del timeout
+                int moveIndex = 0;
+                for (Future<AlphaBetaResult> future : futures) {
+
+                    timeRemaining = timeLimit - System.currentTimeMillis();
+                    if (timeRemaining <= 0) {
+                        throw new TimeoutException();
+                    }
+
+                    AlphaBetaResult result = future.get(timeRemaining, TimeUnit.MILLISECONDS);
+                    Action action = orderedMoves.get(moveIndex);
+                    int currentScore = result.getScore();
+
+                    // Aggiorna il miglior punteggio (Logica Root Node)
+                    if (this.player.equals(Turn.WHITE)) {
                         if (currentScore > currentIterationBestScore) {
                             currentIterationBestScore = currentScore;
                             currentIterationBestMove = action;
                         }
-                        alpha = Math.max(alpha, currentIterationBestScore);
                     } else {
-                        AlphaBetaResult result = maxValue(nextState, alpha, beta, depth, currentDepth, timeLimit);
-                        currentScore = result.getScore();
                         if (currentScore < currentIterationBestScore) {
                             currentIterationBestScore = currentScore;
                             currentIterationBestMove = action;
                         }
-                        beta = Math.min(beta, currentIterationBestScore);
                     }
 
-                    if (alpha >= beta) { break; }
+                    moveIndex++;
                 }
 
-                // Aggiorna il risultato migliore dell'iterazione
+                // Se completata senza eccezioni, aggiorna il risultato globale
                 bestMoveAtCurrentDepth = currentIterationBestMove;
                 bestScoreAtCurrentDepth = currentIterationBestScore;
 
-                currentDepth++;
+                System.out.println("ID: Profondita' D=" + currentDepth + " COMPLETATA.");
+                currentDepth++; // Aggiorna currentDepth per l'iterazione successiva
 
-            } catch (RuntimeException e) {
-                if (e.getMessage().contains("Timeout reached")) { break; }
-                else { throw e; }
+            } catch (TimeoutException | InterruptedException e) {
+                // Timeout o Interruzione: Ferma i thread rimanenti
+                System.out.println("ID: Timeout/Interruzione. Uso il miglior risultato da D=" + (currentDepth - 1) + ".");
+                for (Future<AlphaBetaResult> future : futures) {
+                    future.cancel(true);
+                }
+                break;
+            } catch (ExecutionException e) {
+                System.err.println("Errore durante l'esecuzione del thread: " + e.getMessage());
+                break;
             }
         }
 
-        // Log finale
+        // Log finale (con il punteggio richiesto)
         long totalTime = System.currentTimeMillis() - startTime;
         System.out.println("--- LOG FINALE (Iterative Deepening) ---");
         System.out.println("INFO: Tempo totale trascorso: " + (totalTime / 1000.0) + "s.");
@@ -216,11 +246,12 @@ public class AlphaBetaEngine {
     }
 
     // ----------------------------------------------------------------------
-    // 3. MAX VALUE (White) e 4. MIN VALUE (Black) (Logica ricorsiva)
+    // 3. MAX VALUE (White) e 4. MIN VALUE (Black) (Logica ricorsiva con Interruzione)
     // ----------------------------------------------------------------------
 
     private AlphaBetaResult maxValue(FastTablutState state, int alpha, int beta, int depthRemaining, int currentMaxDepth, long timeLimit) {
         if (System.currentTimeMillis() >= timeLimit) { throw new RuntimeException("Timeout reached in Minimax"); }
+
         if (state.getTurn().equals(Turn.WHITEWIN)) { return new AlphaBetaResult(MAX_VALUE + depthRemaining, null); }
         if (state.getTurn().equals(Turn.BLACKWIN)) { return new AlphaBetaResult(MIN_VALUE - depthRemaining, null); }
         if (depthRemaining == 0) { return new AlphaBetaResult(evaluateState(state), null); }
@@ -245,6 +276,7 @@ public class AlphaBetaEngine {
 
     private AlphaBetaResult minValue(FastTablutState state, int alpha, int beta, int depthRemaining, int currentMaxDepth, long timeLimit) {
         if (System.currentTimeMillis() >= timeLimit) { throw new RuntimeException("Timeout reached in Minimax"); }
+
         if (state.getTurn().equals(Turn.WHITEWIN)) { return new AlphaBetaResult(MAX_VALUE + depthRemaining, null); }
         if (state.getTurn().equals(Turn.BLACKWIN)) { return new AlphaBetaResult(MIN_VALUE - depthRemaining, null); }
         if (depthRemaining == 0) { return new AlphaBetaResult(evaluateState(state), null); }
@@ -268,7 +300,7 @@ public class AlphaBetaEngine {
     }
 
     // ----------------------------------------------------------------------
-    // 5. FUNZIONE EURISTICA
+    // 5. FUNZIONE EURISTICA e Helper Methods (omessi per brevità)
     // ----------------------------------------------------------------------
 
     private boolean containsCoord(List<int[]> list, int r, int c) {
@@ -301,7 +333,7 @@ public class AlphaBetaEngine {
         double materialScore = WEIGHTS[9] * whiteCount + WEIGHTS[10] * blackCount;
 
         double totalScore = WEIGHTS[7] * materialScore +
-                            WEIGHTS[8] * (kingPositionScore + escapeDistancePenalty);
+                WEIGHTS[8] * (kingPositionScore + escapeDistancePenalty);
 
         int finalScore = (int) Math.round(totalScore);
         finalScore = Math.min(finalScore, HEURISTIC_MAX);

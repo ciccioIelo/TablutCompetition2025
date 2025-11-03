@@ -121,14 +121,11 @@ public class FastTablutState extends State implements Serializable {
         int dr = Integer.signum(r2 - r1);
         int dc = Integer.signum(c2 - c1);
 
-        // Controlla ogni casella *tra* la partenza e l'arrivo
         for (int r = r1 + dr, c = c1 + dc; r != r2 || c != c2; r += dr, c += dc) {
             byte currentPawn = get(r, c);
 
-            // Blocco 1: Qualsiasi pedina (escluso il Trono che è un 'T' ma è vuoto)
             if (currentPawn != E && currentPawn != T) return false;
 
-            // Blocco 2: Non puoi scavalcare il Trono o una Cittadella
             if (currentPawn == T && movingPawn != K) return false;
             if (isCitadel(r, c) && get(r, c) == E && movingPawn != K) return false;
         }
@@ -146,23 +143,29 @@ public class FastTablutState extends State implements Serializable {
         int cTo = a.getColumnTo();
 
         if (rFrom == rTo && cFrom == cTo) return false;
-        if (rFrom != rTo && cFrom != cTo) return false; // Diagonale
+        if (rFrom != rTo && cFrom != cTo) return false;
 
         byte pawn = get(rFrom, cFrom);
         if (pawn == E || pawn == T) return false;
 
-        // 1. Validazione del pezzo
         if (this.turn.equals(Turn.WHITE) && (pawn != W && pawn != K)) return false;
         if (this.turn.equals(Turn.BLACK) && (pawn != B)) return false;
 
         // 2. Controllo di destinazione
         if (get(rTo, cTo) != E) return false;
-        if (rTo == THRONE[0] && cTo == THRONE[1] && pawn != K) return false;
 
-        // 3. Controllo Cittadelle
-        if (isCitadel(rTo, cTo) && pawn != K) {
-            if (!isCitadel(rFrom, cFrom)) return false; // Non può entrare se non viene da una Cittadella
-            if (isCitadel(rFrom, cFrom) && (Math.abs(rTo - rFrom) > 1 || Math.abs(cTo - cFrom) > 1)) return false; // Max 1 passo se in Cittadella
+        // 3. Controllo Cittadelle e Trono (Validazione atterraggio)
+        if (rTo == THRONE[0] && cTo == THRONE[1]) {
+            if (pawn != K) return false;
+        } else if (isCitadel(rTo, cTo)) {
+            if (pawn != K) { // Soldati e Nero:
+                if (!isCitadel(rFrom, cFrom)) return false;
+                if (isCitadel(rFrom, cFrom) && (Math.abs(rTo - rFrom) > 1 || Math.abs(cTo - cFrom) > 1)) return false;
+            } else { // Re (K):
+                if (!containsCoord(ESCAPES, rTo, cTo)) {
+                    return false; // **IL RE NON PUÒ ATTERRARE SU UNA CITTADELLA NON-ESCAPE** (FIX)
+                }
+            }
         }
 
         // 4. Controllo del percorso (Climbing)
@@ -226,14 +229,12 @@ public class FastTablutState extends State implements Serializable {
                     isWall = true; // Bordo del tabellone
                 } else {
                     byte wallPawn = get(rWall, cWall);
-                    // Parete: tuo pezzo, Trono (T), Cittadella, o la casella da cui proviene il mosso (rLast, cLast)
                     if (wallPawn == movedPawn || wallPawn == K || (rWall == THRONE[0] && cWall == THRONE[1]) || isCitadel(rWall, cWall)) {
                         isWall = true;
                     }
                 }
 
                 if (isWall) {
-                    // Cattura pezzo
                     if (get(rOpp, cOpp) == W) whitePawnsCount--;
                     if (get(rOpp, cOpp) == B) blackPawnsCount--;
                     set(rOpp, cOpp, E);
@@ -256,7 +257,6 @@ public class FastTablutState extends State implements Serializable {
                     }
 
                     byte kWall = get(rKWall, cKWall);
-                    // Parete: Pezzo Nero (B), Trono (T), Cittadella
                     if (kWall == B || (rKWall == THRONE[0] && cKWall == THRONE[1]) || isCitadel(rKWall, cKWall)) {
                         wallCount++;
                     }
@@ -266,8 +266,8 @@ public class FastTablutState extends State implements Serializable {
 
                 if (rOpp == THRONE[0] && cOpp == THRONE[1] && wallCount == 4) {
                     isKingCaptured = true; // 4 lati sul Trono
-                } else if (wallCount >= 3 && (rOpp == THRONE[0] || cOpp == THRONE[1])) {
-                    isKingCaptured = true; // 3 lati se adiacente al Trono/Cittadella
+                } else if (wallCount >= 3 && (rOpp == THRONE[0] || cOpp == THRONE[1] || containsCoord(CITADELS, rOpp, cOpp))) {
+                    isKingCaptured = true; // 3 lati se adiacente a Trono/Cittadella/Bordo
                 } else if (wallCount == 4) {
                     isKingCaptured = true; // 4 lati ovunque
                 }
@@ -307,32 +307,31 @@ public class FastTablutState extends State implements Serializable {
 
                             if (rTo < 0 || rTo >= BOARD_SIZE || cTo < 0 || cTo >= BOARD_SIZE) break;
 
-                            // 1. Controllo ostacoli intermedi (Climbing)
-                            if (steps > 1 && get(rTo, cTo) != E) {
-                                // Se la destinazione è occupata, e non è il primo passo, fermati
-                                if (get(r + dr * (steps - 1), c + dc * (steps - 1)) != E) break;
-                            }
-
-                            // Controllo: la casella di arrivo deve essere libera o una destinazione valida
+                            // 1. Controllo ostacoli/destinazione occupata
                             if (get(rTo, cTo) != E) break;
 
-                            // 2. Controllo Restrizioni di Arrivo
-                            if (rTo == THRONE[0] && cTo == THRONE[1] && pawn != K) break;
-                            if (isCitadel(rTo, cTo) && pawn != K) {
-                                if (!isCitadel(r, c)) break; // Non può entrare da fuori Cittadella
-                                if (isCitadel(r, c) && steps > 1) break; // Massima 1 casella se interno
-                            }
-
-                            // 3. Controllo Percorso (necessario per trono/cittadelle attraversate)
+                            // 2. Controllo Percorso (necessario per Throne/Citadel in mezzo)
                             if (!isPathClear(r, c, rTo, cTo, pawn)) break;
 
-                            // Se tutti i controlli passano, la mossa è legale
+                            // 3. Controllo Restrizioni di Arrivo (come in applyMove)
+                            if (rTo == THRONE[0] && cTo == THRONE[1]) {
+                                if (pawn != K) break;
+                            } else if (isCitadel(rTo, cTo)) {
+                                if (pawn != K) {
+                                    if (!isCitadel(r, c)) break;
+                                    if (isCitadel(r, c) && steps > 1) break;
+                                } else { // Re (K):
+                                    if (!containsCoord(ESCAPES, rTo, cTo)) {
+                                        break; // Re su Cittadella NON-Escape ILLEGALE
+                                    }
+                                }
+                            }
+
                             try {
                                 String from = getBox(r, c);
                                 String to = getBox(rTo, cTo);
                                 legalMoves.add(new Action(from, to, this.getTurn()));
                             } catch (IOException e) { /* Ignora */ }
-
                         }
                     }
                 }
@@ -344,6 +343,7 @@ public class FastTablutState extends State implements Serializable {
 
     // --- Metodi di compatibilità Framework ---
 
+    // ... (omissis, metodi di override come getPawn, removePawn, getBoard, hashCode, equals)
     private Pawn byteToPawn(byte b) {
         if (b == W) return Pawn.WHITE;
         if (b == B) return Pawn.BLACK;

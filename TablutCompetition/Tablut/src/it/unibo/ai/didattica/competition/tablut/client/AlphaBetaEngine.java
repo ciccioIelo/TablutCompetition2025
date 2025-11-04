@@ -7,7 +7,7 @@ import java.util.Comparator;
 import java.util.List;
 import java.util.HashMap;
 import java.util.Map;
-import java.util.concurrent.*; // Import per la Parallelizzazione
+import java.util.concurrent.*;
 import it.unibo.ai.didattica.competition.tablut.domain.Action;
 import it.unibo.ai.didattica.competition.tablut.domain.FastTablutState;
 import it.unibo.ai.didattica.competition.tablut.domain.State.Turn;
@@ -28,10 +28,8 @@ public class AlphaBetaEngine {
     private static final int INITIAL_ALPHA = MIN_VALUE - 1000;
     private static final int INITIAL_BETA = MAX_VALUE + 1000;
 
-    // --- PESI EURISTICI BILANCIATI (Estratti dall'agente originale) ---
-    private static final double[] WEIGHTS = {
-            5000.0, -300.0, -500.0, -50.0, -150.0, 100.0, -800.0, 1.0, 1.0, 80.0, -60.0, -200.0
-    };
+    // VARIABILE PER I PESI (INIETTABILI - FASE 3.1)
+    private final double[] weights;
 
     // --- TRANSPOSITION TABLE e Helper Classes ---
     private Map<String, TranspositionEntry> transpositionTable;
@@ -82,28 +80,35 @@ public class AlphaBetaEngine {
     private static final int N_CPUS = Runtime.getRuntime().availableProcessors();
 
 
-    public AlphaBetaEngine(Turn player) {
+    // COSTRUTTORE AGGIORNATO: ACCETTA I PESI
+    public AlphaBetaEngine(Turn player, double[] weights) {
         this.player = player;
+        this.weights = weights; // Usa i pesi iniettati
         this.transpositionTable = new HashMap<>();
         this.executorService = Executors.newFixedThreadPool(N_CPUS);
     }
 
     // ----------------------------------------------------------------------
-    // 1. GENERAZIONE E ORDINAMENTO DELLE MOSSE
+    // 1. GENERAZIONE E ORDINAMENTO DELLE MOSSE (METODI REINTEGRATI)
     // ----------------------------------------------------------------------
 
     private List<Action> getLegalMoves(FastTablutState state) {
         return state.generateLegalMoves();
     }
 
+    /**
+     * Reintegra il metodo di ordinamento basato sull'euristica dello stato successivo.
+     */
     private List<Action> sortMovesByHeuristic(FastTablutState currentState, List<Action> moves) {
         if (moves.isEmpty()) return Collections.emptyList();
 
         List<ActionScore> scoredMoves = new ArrayList<>();
 
         for (Action action : moves) {
+            // Per l'ordinamento, simuliamo la mossa in uno stato temporaneo per valutarla
             FastTablutState nextStateForEval = currentState.clone();
             if (nextStateForEval.applyMove(action)) {
+                // Valuta lo stato dopo l'applicazione della mossa
                 int score = evaluateState(nextStateForEval);
                 scoredMoves.add(new ActionScore(action, score));
             }
@@ -128,7 +133,7 @@ public class AlphaBetaEngine {
     public Action getBestMove(FastTablutState currentState, int timeoutSeconds) {
 
         long startTime = System.currentTimeMillis();
-        final long timeLimit = startTime + (timeoutSeconds * 1000L); // timeLimit is implicitly final
+        final long timeLimit = startTime + (timeoutSeconds * 1000L);
 
         this.transpositionTable.clear();
 
@@ -154,25 +159,20 @@ public class AlphaBetaEngine {
             int currentIterationBestScore = (this.player.equals(Turn.WHITE)) ? MIN_VALUE : MAX_VALUE;
             Action currentIterationBestMove = bestMoveAtCurrentDepth;
 
-            // CATTURA IL VALORE CORRENTE di currentDepth in una variabile final
-            final int searchDepth = currentDepth;
+            final int searchDepth = currentDepth; // Variabile final per la lambda
 
-            // Ordina le mosse per la Root Node (MVS - Most Valuable Strategy)
             List<Action> orderedMoves = sortMovesByHeuristic(currentState, legalMoves);
 
-            // --- PARALLELIZZAZIONE DEL ROOT NODE (Fase 2) ---
             List<Future<AlphaBetaResult>> futures = new ArrayList<>();
 
             for (Action action : orderedMoves) {
 
-                // Crea un Task Callable per ogni mossa candidata
                 Callable<AlphaBetaResult> task = () -> {
                     FastTablutState nextState = currentState.clone();
                     if (!nextState.applyMove(action)) {
                         return new AlphaBetaResult(this.player.equals(Turn.WHITE) ? MIN_VALUE : MAX_VALUE, action);
                     }
 
-                    // Usiamo searchDepth (final) anziché currentDepth
                     if (this.player.equals(Turn.WHITE)) {
                         return minValue(nextState, INITIAL_ALPHA, INITIAL_BETA, searchDepth, searchDepth, timeLimit);
                     } else {
@@ -184,7 +184,6 @@ public class AlphaBetaEngine {
             }
 
             try {
-                // Raccogli i risultati con la gestione del timeout
                 int moveIndex = 0;
                 for (Future<AlphaBetaResult> future : futures) {
 
@@ -197,7 +196,6 @@ public class AlphaBetaEngine {
                     Action action = orderedMoves.get(moveIndex);
                     int currentScore = result.getScore();
 
-                    // Aggiorna il miglior punteggio (Logica Root Node)
                     if (this.player.equals(Turn.WHITE)) {
                         if (currentScore > currentIterationBestScore) {
                             currentIterationBestScore = currentScore;
@@ -213,15 +211,13 @@ public class AlphaBetaEngine {
                     moveIndex++;
                 }
 
-                // Se completata senza eccezioni, aggiorna il risultato globale
                 bestMoveAtCurrentDepth = currentIterationBestMove;
                 bestScoreAtCurrentDepth = currentIterationBestScore;
 
-                System.out.println("ID: Profondita' D=" + currentDepth + " COMPLETATA.");
-                currentDepth++; // Aggiorna currentDepth per l'iterazione successiva
+                System.out.println("ID: Profondità D=" + currentDepth + " COMPLETATA.");
+                currentDepth++;
 
             } catch (TimeoutException | InterruptedException e) {
-                // Timeout o Interruzione: Ferma i thread rimanenti
                 System.out.println("ID: Timeout/Interruzione. Uso il miglior risultato da D=" + (currentDepth - 1) + ".");
                 for (Future<AlphaBetaResult> future : futures) {
                     future.cancel(true);
@@ -233,7 +229,6 @@ public class AlphaBetaEngine {
             }
         }
 
-        // Log finale (con il punteggio richiesto)
         long totalTime = System.currentTimeMillis() - startTime;
         System.out.println("--- LOG FINALE (Iterative Deepening) ---");
         System.out.println("INFO: Tempo totale trascorso: " + (totalTime / 1000.0) + "s.");
@@ -246,7 +241,7 @@ public class AlphaBetaEngine {
     }
 
     // ----------------------------------------------------------------------
-    // 3. MAX VALUE (White) e 4. MIN VALUE (Black) (Logica ricorsiva con Interruzione)
+    // 3. MAX VALUE (White) e 4. MIN VALUE (Black)
     // ----------------------------------------------------------------------
 
     private AlphaBetaResult maxValue(FastTablutState state, int alpha, int beta, int depthRemaining, int currentMaxDepth, long timeLimit) {
@@ -300,7 +295,7 @@ public class AlphaBetaEngine {
     }
 
     // ----------------------------------------------------------------------
-    // 5. FUNZIONE EURISTICA e Helper Methods (omessi per brevità)
+    // 5. FUNZIONE EURISTICA (USA I PESI MEMBRI)
     // ----------------------------------------------------------------------
 
     private boolean containsCoord(List<int[]> list, int r, int c) {
@@ -329,11 +324,11 @@ public class AlphaBetaEngine {
         if (kingR == -1) { return MIN_VALUE; }
 
         double kingPositionScore = evalKingPos(state, kingR, kingC);
-        double escapeDistancePenalty = WEIGHTS[11] * getMinEscapeDistance(kingR, kingC);
-        double materialScore = WEIGHTS[9] * whiteCount + WEIGHTS[10] * blackCount;
+        double escapeDistancePenalty = this.weights[11] * getMinEscapeDistance(kingR, kingC);
+        double materialScore = this.weights[9] * whiteCount + this.weights[10] * blackCount;
 
-        double totalScore = WEIGHTS[7] * materialScore +
-                WEIGHTS[8] * (kingPositionScore + escapeDistancePenalty);
+        double totalScore = this.weights[7] * materialScore +
+                this.weights[8] * (kingPositionScore + escapeDistancePenalty);
 
         int finalScore = (int) Math.round(totalScore);
         finalScore = Math.min(finalScore, HEURISTIC_MAX);
@@ -360,24 +355,24 @@ public class AlphaBetaEngine {
                 boolean isAdjacent = (steps == 1);
 
                 if (currentPawn == FastTablutState.E && containsCoord(FastTablutState.ESCAPES, r, c)) {
-                    score += WEIGHTS[0]; break;
+                    score += this.weights[0]; break;
                 }
 
                 if (currentPawn == FastTablutState.E && isCitadelOrThrone(r, c)) {
                     if (r == FastTablutState.THRONE[0] && c == FastTablutState.THRONE[1]) {
-                        score += WEIGHTS[2];
+                        score += this.weights[2];
                     } else if (containsCoord(FastTablutState.CITADELS, r, c)) {
-                        score += WEIGHTS[1];
+                        score += this.weights[1];
                     }
                     continue;
                 }
 
                 if (currentPawn == FastTablutState.B) {
-                    score += isAdjacent ? WEIGHTS[6] : WEIGHTS[5]; break;
+                    score += isAdjacent ? this.weights[6] : this.weights[5]; break;
                 }
 
                 if (currentPawn == FastTablutState.W || currentPawn == FastTablutState.K) {
-                    score += isAdjacent ? WEIGHTS[4] : WEIGHTS[3]; break;
+                    score += isAdjacent ? this.weights[4] : this.weights[3]; break;
                 }
             }
         }

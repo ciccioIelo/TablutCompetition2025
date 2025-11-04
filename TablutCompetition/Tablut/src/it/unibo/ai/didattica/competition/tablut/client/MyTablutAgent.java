@@ -10,7 +10,7 @@ import it.unibo.ai.didattica.competition.tablut.domain.State.Turn;
 
 /**
  * Agente Tablut modulare: gestisce I/O e delega la logica di ricerca (Alpha-Beta)
- * all'AlphaBetaEngine, utilizzando lo stato ottimizzato FastTablutState.
+ * all'AlphaBetaEngine, iniettando i pesi.
  */
 public class MyTablutAgent extends TablutClient {
 
@@ -20,8 +20,12 @@ public class MyTablutAgent extends TablutClient {
     public MyTablutAgent(String player, String name, int timeout) throws IOException {
         super(player, name, timeout);
         this.timeoutInSeconds = timeout;
-        this.aiEngine = new AlphaBetaEngine(this.getPlayer());
-        System.out.println("Agente " + name + " (" + player + ") inizializzato.");
+
+        // FASE 3.1: INIEZIONE DEI PESI INIZIALI
+        double[] initialWeights = HeuristicWeights.INITIAL_WEIGHTS;
+        this.aiEngine = new AlphaBetaEngine(this.getPlayer(), initialWeights);
+
+        System.out.println("Agente " + name + " (" + player + ") inizializzato con motore AI modulare.");
     }
 
     public static void main(String[] args) throws IOException {
@@ -73,7 +77,6 @@ public class MyTablutAgent extends TablutClient {
             System.out.println("Current state:");
             System.out.println(currentState.toString());
 
-            // Controlla stati terminali
             if (currentState.getTurn().equals(StateTablut.Turn.WHITEWIN) ||
                     currentState.getTurn().equals(StateTablut.Turn.BLACKWIN) ||
                     currentState.getTurn().equals(StateTablut.Turn.DRAW)) {
@@ -92,13 +95,9 @@ public class MyTablutAgent extends TablutClient {
 
             if (this.getPlayer().equals(currentState.getTurn())) {
 
-                // 1. Converte lo stato lento del server (StateTablut) nello stato veloce interno (FastTablutState)
                 FastTablutState fastState = FastTablutState.fromState(currentState);
-
-                // 2. Esegue la ricerca con il motore delegato
                 Action bestAction = aiEngine.getBestMove(fastState, this.timeoutInSeconds - 2);
 
-                // 3. Invia la mossa
                 if (bestAction != null) {
                     System.out.println("Mossa scelta: " + bestAction.toString());
                     try {

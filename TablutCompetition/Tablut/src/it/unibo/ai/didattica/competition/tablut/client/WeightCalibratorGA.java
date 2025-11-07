@@ -10,7 +10,6 @@ import java.io.IOException;
 import java.io.PrintWriter;
 import java.util.*;
 import java.util.concurrent.*;
-import java.util.stream.Collectors;
 
 /**
  * Classe per l'Algoritmo Genetico (GA) che ottimizza i pesi euristici
@@ -21,14 +20,13 @@ public class WeightCalibratorGA {
 
     // --- PARAMETRI GA (Modificabili per il Tuning) ---
     private static final int POPULATION_SIZE = 50;
-    private static final int NUM_GENERATIONS = 1;
-    private static final int NUM_MATCHES_PER_CHROMOSOME = 5; // Simula 5 partite contro avversari casuali dal pool
+    private static final int NUM_GENERATIONS = 1; // TEMPORANEAMENTE SETTATO A 1
+    private static final int NUM_MATCHES_PER_CHROMOSOME = 5;
     private static final double MUTATION_RATE = 0.05;
     private static final double MUTATION_STEP = 100.0;
 
-    // Tempo di simulazione aggressivo per forzare D=2/3
-    private static final int MATCH_TIMEOUT_SECONDS = 0; // Usiamo 0 secondi per forzare il timeout dinamico
-    private static final long SINGLE_MOVE_TIME_MILLIS = 1000L; // 500 ms per mossa per mirare a D=2
+    // Tempo di simulazione aggressivo per forzare D=2/3 (1 secondo per mossa)
+    private static final long SINGLE_MOVE_TIME_MILLIS = 1000L;
 
     private final ExecutorService executorService;
     private final Random random = new Random();
@@ -67,7 +65,6 @@ public class WeightCalibratorGA {
 
     public double[] runGA() throws InterruptedException, ExecutionException, IOException {
 
-        // Inizializza il writer per il log
         logWriter = new PrintWriter(new FileWriter("ga_evolution_log.txt", false));
         logWriter.println("GENERATION\tBEST_FITNESS\tAVG_FITNESS\tBEST_WEIGHTS");
         logWriter.flush();
@@ -87,7 +84,6 @@ public class WeightCalibratorGA {
             population.sort(Comparator.comparingDouble(Chromosome::getFitnessScore).reversed());
             Chromosome currentBest = population.get(0);
 
-            // Aggiorna il miglior cromosoma generale
             if (overallBestChromosome == null || currentBest.getFitnessScore() > overallBestChromosome.getFitnessScore()) {
                 overallBestChromosome = new Chromosome(currentBest.getWeights());
                 overallBestChromosome.fitnessScore = currentBest.getFitnessScore();
@@ -96,7 +92,7 @@ public class WeightCalibratorGA {
             double avgFitness = population.stream().mapToDouble(Chromosome::getFitnessScore).average().orElse(0.0);
 
             // Log su console
-            System.out.printf("Time: %.2fs | Best Fitness: %.2f | Avg Fitness: %.2f\n",
+            System.out.printf(Locale.US, "Time: %.2fs | Best Fitness: %.4f | Avg Fitness: %.4f\n",
                     (System.currentTimeMillis() - genStartTime) / 1000.0,
                     currentBest.getFitnessScore(),
                     avgFitness
@@ -105,18 +101,15 @@ public class WeightCalibratorGA {
             // Log su file
             logEvolution(gen, currentBest.getFitnessScore(), avgFitness, currentBest.getWeights());
 
-            // Aggiungi i migliori alla storia (per Co-Evoluzione)
             bestChromosomesHistory.add(currentBest);
             if (bestChromosomesHistory.size() > 20) {
                 bestChromosomesHistory.remove(0);
             }
 
-            // Seleziona i genitori (es. 50% migliore)
-            List<Chromosome> parents = population.subList(0, POPULATION_SIZE / 2);
-
             // 3. Creazione Nuova Generazione (Crossover e Mutazione)
+            List<Chromosome> parents = population.subList(0, POPULATION_SIZE / 2);
             List<Chromosome> newPopulation = new ArrayList<>();
-            newPopulation.add(overallBestChromosome); // Mantieni il migliore assoluto (Elitismo)
+            newPopulation.add(overallBestChromosome); // Mantieni il migliore assoluto
 
             while (newPopulation.size() < POPULATION_SIZE) {
                 Chromosome parent1 = parents.get(random.nextInt(parents.size()));
@@ -136,10 +129,13 @@ public class WeightCalibratorGA {
         return overallBestChromosome.getWeights();
     }
 
-    // ... (omissis: OPERATORI GA: initializePopulation, crossover, mutate)
+    // ----------------------------------------------------------------------
+    // OPERATORI GA
+    // ----------------------------------------------------------------------
 
     private List<Chromosome> initializePopulation() {
         List<Chromosome> population = new ArrayList<>();
+        // **UTILIZZA HeuristicWeights PER LA BASE**
         for (int i = 0; i < POPULATION_SIZE; i++) {
             double[] weights = HeuristicWeights.INITIAL_WEIGHTS.clone();
             if (i > 0) mutate(weights);
@@ -207,11 +203,11 @@ public class WeightCalibratorGA {
                 for (int i = 0; i < NUM_MATCHES_PER_CHROMOSOME; i++) {
                     Chromosome opponent = opponents.get(random.nextInt(opponents.size()));
 
-                    // Match 1: Cromo vs Opponent
+                    // Match 1: Cromo (Bianco) vs Opponent (Nero)
                     Turn result = simulateMatch(chromosome.getWeights(), opponent.getWeights());
                     chromosome.addResult(result);
 
-                    // Match 2: Opponent vs Cromo (Ruoli Invertiti)
+                    // Match 2: Opponent (Bianco) vs Cromo (Nero) - Ruoli Invertiti
                     result = simulateMatch(opponent.getWeights(), chromosome.getWeights());
                     chromosome.addResult(invertResult(result));
                 }
@@ -236,40 +232,37 @@ public class WeightCalibratorGA {
     }
 
     /**
-     * Simula una singola partita tra due set di pesi, forzando un breve timeout per mossa (D=2/3).
+     * Simula una singola partita tra due set di pesi.
      */
     private Turn simulateMatch(double[] whiteWeights, double[] blackWeights) {
         final int MAX_MOVES = 200;
 
-        // Inizializza i motori con i pesi specifici
         AlphaBetaEngine whiteEngine = new AlphaBetaEngine(Turn.WHITE, whiteWeights);
         AlphaBetaEngine blackEngine = new AlphaBetaEngine(Turn.BLACK, blackWeights);
 
+        // Assicurati che StateTablut sia importato/riconoscibile
         FastTablutState currentState = FastTablutState.fromState(new it.unibo.ai.didattica.competition.tablut.domain.StateTablut());
         currentState.setTurn(Turn.WHITE);
 
         for (int i = 0; i < MAX_MOVES; i++) {
             Action move = null;
 
-            // Tempo limite per la singola mossa
-            long moveTimeLimit = System.currentTimeMillis() + SINGLE_MOVE_TIME_MILLIS;
-
             try {
+                // Il tempo passato è il limite di tempo *totale* per l'ID in millisecondi
                 if (currentState.getTurn().equals(Turn.WHITE)) {
-                    // Passa il tempo limite assoluto (per D=2, circa 500ms)
+                    // Passiamo i millisecondi, che il motore converte in secondi per il suo timer
                     move = whiteEngine.getBestMove(currentState, (int)SINGLE_MOVE_TIME_MILLIS / 1000);
                 } else if (currentState.getTurn().equals(Turn.BLACK)) {
                     move = blackEngine.getBestMove(currentState, (int)SINGLE_MOVE_TIME_MILLIS / 1000);
                 }
             } catch (Exception e) {
-                // Errore/Timeout interno nella ricerca (dovrebbe essere catturato come null)
+                // Errore/Timeout gestito dal motore
             }
 
             if (move == null) {
                 return Turn.DRAW;
             }
 
-            // Applica la mossa e verifica le condizioni terminali
             FastTablutState nextState = currentState.clone();
             nextState.applyMove(move);
             currentState = nextState;

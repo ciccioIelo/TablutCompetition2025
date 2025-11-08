@@ -20,7 +20,7 @@ public class WeightCalibratorGA {
 
     // --- PARAMETRI GA (Modificabili per il Tuning) ---
     private static final int POPULATION_SIZE = 50;
-    private static final int NUM_GENERATIONS = 1; // TEMPORANEAMENTE SETTATO A 1
+    private static final int NUM_GENERATIONS = 45; // TEMPORANEAMENTE SETTATO A 1
     private static final int NUM_MATCHES_PER_CHROMOSOME = 5;
     private static final double MUTATION_RATE = 0.05;
     private static final double MUTATION_STEP = 100.0;

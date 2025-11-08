@@ -112,12 +112,13 @@
     </target>
 
 	<property name="agent.name" value="it.unibo.ai.didattica.competition.tablut.client.MyTablutAgent" />
+    <property name="agent2.name" value="it.unibo.ai.didattica.competition.tablut.client.MyTablutAgentCopy" />
 	    <property name="server.ip" value="localhost" />
 	    <property name="timeout" value="59" />
 
 	    <!-- TARGET PER IL TUO AGENTE (AGGIUNTO) -->
 	    <target name="mywhite" depends="compile">
-	        <java fork="true" classname="${agent.name}">
+	        <java fork="true" classname="${agent2.name}">
 	            <classpath>
 	                <pathelement path="lib/gson-2.2.2.jar" />
 	                <pathelement location="build" />
@@ -130,7 +131,7 @@
 
 	    <!-- TARGET PER IL TUO AGENTE (AGGIUNTO) -->
 	    <target name="myblack" depends="compile">
-	        <java fork="true" classname="${agent.name}">
+	        <java fork="true" classname="${agent2.name}">
 	            <classpath>
 	                <pathelement path="lib/gson-2.2.2.jar" />
 	                <pathelement location="build" />

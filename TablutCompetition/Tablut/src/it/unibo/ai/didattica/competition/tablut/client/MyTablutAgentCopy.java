@@ -22,7 +22,7 @@ public class MyTablutAgentCopy extends TablutClient {
         this.timeoutInSeconds = timeout;
 
         // FASE 3.1: INIEZIONE DEI PESI INIZIALI
-        double[] initialWeights = HeuristicWeights.INITIAL_WEIGHTS;
+        double[] initialWeights = HeuristicWeightsCopy.INITIAL_WEIGHTS;
         this.aiEngine = new AlphaBetaEngineCopy(this.getPlayer(), initialWeights);
 
         System.out.println("Agente " + name + " (" + player + ") inizializzato con motore AI modulare.");
@@ -30,7 +30,7 @@ public class MyTablutAgentCopy extends TablutClient {
 
     public static void main(String[] args) throws IOException {
         String role = args[0];
-        String name = "MyTablutAgent";
+        String name = "MyTablutAgentCopy";
         int timeout = 59;
 
         if (args.length >= 2) {
@@ -49,7 +49,7 @@ public class MyTablutAgentCopy extends TablutClient {
 
         System.out.println("Inizializzazione di " + name + " come " + role + " con timeout " + timeout + "s @ " + ip);
 
-        TablutClient client = new MyTablutAgent(role, name, timeout);
+        TablutClient client = new MyTablutAgentCopy(role, name, timeout);
         client.run();
     }
 

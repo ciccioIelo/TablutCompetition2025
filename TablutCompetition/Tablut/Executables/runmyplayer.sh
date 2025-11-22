@@ -1,3 +1,3 @@
 #!/bin/bash
 
-java -jar /home/tablut/tablut/RandomPlayer.jar "$1" "$2" "$3"
+java -jar /home/tablut/tablut/4bits.jar "$1" "$2" "$3"

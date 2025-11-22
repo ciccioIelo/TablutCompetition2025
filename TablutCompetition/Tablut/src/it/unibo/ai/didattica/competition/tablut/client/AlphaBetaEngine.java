@@ -257,10 +257,10 @@ public class AlphaBetaEngine {
                     bestMoveAtCurrentDepth = currentIterationBestMove;
                     bestScoreAtCurrentDepth = currentIterationBestScore;
 
-                    System.out.println("ID: Profondità D=" + currentDepth + " COMPLETATA. Mossa: " + bestMoveAtCurrentDepth.toString() + " Punteggio: " + bestScoreAtCurrentDepth);
+                    //System.out.println("ID: Profondità D=" + currentDepth + " COMPLETATA. Mossa: " + bestMoveAtCurrentDepth.toString() + " Punteggio: " + bestScoreAtCurrentDepth);
                     currentDepth++;
                 } else {
-                    System.out.println("ID: Timeout durante il completamento di D=" + currentDepth + ". Uso D=" + (currentDepth - 1));
+                    //System.out.println("ID: Timeout durante il completamento di D=" + currentDepth + ". Uso D=" + (currentDepth - 1));
                     break;
                 }
 

@@ -214,11 +214,11 @@ public class AlphaBetaEngine {
                 bestMoveAtCurrentDepth = currentIterationBestMove;
                 bestScoreAtCurrentDepth = currentIterationBestScore;
 
-                System.out.println("ID: Profondità D=" + currentDepth + " COMPLETATA.");
+                //System.out.println("ID: Profondità D=" + currentDepth + " COMPLETATA.");
                 currentDepth++;
 
             } catch (TimeoutException | InterruptedException e) {
-                System.out.println("ID: Timeout/Interruzione. Uso il miglior risultato da D=" + (currentDepth - 1) + ".");
+                //System.out.println("ID: Timeout/Interruzione. Uso il miglior risultato da D=" + (currentDepth - 1) + ".");
                 for (Future<AlphaBetaResult> future : futures) {
                     future.cancel(true);
                 }
@@ -229,13 +229,13 @@ public class AlphaBetaEngine {
             }
         }
 
-        long totalTime = System.currentTimeMillis() - startTime;
-        System.out.println("--- LOG FINALE (Iterative Deepening) ---");
-        System.out.println("INFO: Tempo totale trascorso: " + (totalTime / 1000.0) + "s.");
-        System.out.println("INFO: Massima profondità completata: D=" + (currentDepth - 1) + ".");
-        System.out.println("INFO: Mossa scelta: " + bestMoveAtCurrentDepth.toString());
-        System.out.println("INFO: Punteggio finale della mossa: " + bestScoreAtCurrentDepth);
-        System.out.println("------------------------");
+        //long totalTime = System.currentTimeMillis() - startTime;
+        // System.out.println("--- LOG FINALE (Iterative Deepening) ---");
+        // System.out.println("INFO: Tempo totale trascorso: " + (totalTime / 1000.0) + "s.");
+        // System.out.println("INFO: Massima profondità completata: D=" + (currentDepth - 1) + ".");
+        // System.out.println("INFO: Mossa scelta: " + bestMoveAtCurrentDepth.toString());
+        // System.out.println("INFO: Punteggio finale della mossa: " + bestScoreAtCurrentDepth);
+        // System.out.println("------------------------");
 
         return bestMoveAtCurrentDepth;
     }

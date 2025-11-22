@@ -5,6 +5,7 @@ import java.util.Arrays;
 import java.util.List;
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.Random; // Import aggiunto
 import java.io.IOException;
 
 import it.unibo.ai.didattica.competition.tablut.domain.State.Pawn;
@@ -13,6 +14,7 @@ import it.unibo.ai.didattica.competition.tablut.domain.State.Turn;
 /**
  * Stato del gioco ottimizzato per le performance (Fase 1 della Roadmap).
  * Implementa la logica completa di movimento e cattura delle regole Ashton Tablut.
+ * * MODIFICATO: Aggiunto Zobrist Hashing per Transposition Table.
  */
 public class FastTablutState extends State implements Serializable {
 
@@ -29,6 +31,29 @@ public class FastTablutState extends State implements Serializable {
     public int kingCol = -1;
     public int whitePawnsCount = 0;
     public int blackPawnsCount = 0;
+
+    // --------- INIZIO MODIFICHE ZOBRIST HASHING ---------
+    private long zobristKey;
+
+    // Tabella [riga][colonna][tipo_pedone]
+    // tipo_pedone: 0=E, 1=W, 2=B, 3=K, 4=T
+    private static final long[][][] zobristTable = new long[BOARD_SIZE][BOARD_SIZE][5];
+    private static final long zobristTurnBlack;
+    private static final Random rand = new Random(42); // Usa un seed fisso per la riproducibilità
+
+    static {
+        // Inizializza la tabella con valori casuali
+        for (int r = 0; r < BOARD_SIZE; r++) {
+            for (int c = 0; c < BOARD_SIZE; c++) {
+                for (int p = 0; p < 5; p++) {
+                    zobristTable[r][c][p] = rand.nextLong();
+                }
+            }
+        }
+        zobristTurnBlack = rand.nextLong();
+    }
+    // --------- FINE MODIFICHE ZOBRIST HASHING ---------
+
 
     private static final java.util.Map<Pawn, Byte> PAWN_TO_BYTE = new java.util.HashMap<>();
     static {
@@ -61,7 +86,7 @@ public class FastTablutState extends State implements Serializable {
 
     // Metodi di accesso interni semplici
     public byte get(int r, int c) {
-        if (r < 0 || r >= BOARD_SIZE || c < 0 || c >= BOARD_SIZE) return E;
+        if (r < 0 || r >= BOARD_SIZE || c < 0 || c >= BOARD_SIZE) return E; // Ritorna EMPTY per coordinate fuori bordi
         return fastBoard[r * BOARD_SIZE + c];
     }
     public void set(int r, int c, byte pawnType) { fastBoard[r * BOARD_SIZE + c] = pawnType; }
@@ -80,6 +105,7 @@ public class FastTablutState extends State implements Serializable {
     public static FastTablutState fromState(State state) {
         FastTablutState fastState = new FastTablutState();
         fastState.turn = state.getTurn();
+        fastState.zobristKey = 0L; // MODIFICA ZOBRIST: Inizia da 0
 
         for (int r = 0; r < BOARD_SIZE; r++) {
             for (int c = 0; c < BOARD_SIZE; c++) {
@@ -87,6 +113,9 @@ public class FastTablutState extends State implements Serializable {
                 byte bytePawn = PAWN_TO_BYTE.getOrDefault(pawn, E);
 
                 fastState.set(r, c, bytePawn);
+
+                // MODIFICA ZOBRIST: Aggiorna l'hash iniziale
+                fastState.zobristKey ^= zobristTable[r][c][bytePawn];
 
                 if (pawn.equals(Pawn.WHITE)) {
                     fastState.whitePawnsCount++;
@@ -98,6 +127,12 @@ public class FastTablutState extends State implements Serializable {
                 }
             }
         }
+
+        // MODIFICA ZOBRIST: Aggiungi il turno all'hash
+        if (fastState.turn.equals(Turn.BLACK)) {
+            fastState.zobristKey ^= zobristTurnBlack;
+        }
+
         return fastState;
     }
 
@@ -110,7 +145,13 @@ public class FastTablutState extends State implements Serializable {
         newState.kingCol = this.kingCol;
         newState.whitePawnsCount = this.whitePawnsCount;
         newState.blackPawnsCount = this.blackPawnsCount;
+        newState.zobristKey = this.zobristKey; // MODIFICA ZOBRIST: Copia la chiave
         return newState;
+    }
+
+    // MODIFICA ZOBRIST: Getter per la chiave
+    public long getZobristKey() {
+        return this.zobristKey;
     }
 
     // ----------------------------------------------------------------------
@@ -126,8 +167,16 @@ public class FastTablutState extends State implements Serializable {
 
             if (currentPawn != E && currentPawn != T) return false;
 
+            // REGOLA ASHTON: Solo il Re può passare sul Trono
             if (currentPawn == T && movingPawn != K) return false;
-            if (isCitadel(r, c) && get(r, c) == E && movingPawn != K) return false;
+
+            // REGOLA ASHTON: Nessuno può passare su una Cittadella (tranne il Re se è la sua mossa finale per fuggire)
+            // Questa logica è complessa, la gestiamo nel check di validazione mossa.
+            // Per ora, assumiamo che le cittadelle vuote blocchino (come il trono per i soldati).
+            if (isCitadel(r, c) && movingPawn != K) return false;
+
+            // Fix per Re che attraversa cittadelle (non consentito)
+            if (isCitadel(r, c) && movingPawn == K) return false;
         }
         return true;
     }
@@ -142,28 +191,29 @@ public class FastTablutState extends State implements Serializable {
         int rTo = a.getRowTo();
         int cTo = a.getColumnTo();
 
-        if (rFrom == rTo && cFrom == cTo) return false;
-        if (rFrom != rTo && cFrom != cTo) return false;
+        // 1. Controllo di base e turno
+        if (rFrom == rTo && cFrom == cTo) return false; // Mossa nulla
+        if (rFrom != rTo && cFrom != cTo) return false; // Mossa diagonale
 
         byte pawn = get(rFrom, cFrom);
-        if (pawn == E || pawn == T) return false;
+        if (pawn == E || pawn == T) return false; // Muove casella vuota o trono
 
-        if (this.turn.equals(Turn.WHITE) && (pawn != W && pawn != K)) return false;
-        if (this.turn.equals(Turn.BLACK) && (pawn != B)) return false;
+        if (this.turn.equals(Turn.WHITE) && (pawn != W && pawn != K)) return false; // Turno Bianco, muove Nero
+        if (this.turn.equals(Turn.BLACK) && (pawn != B)) return false; // Turno Nero, muove Bianco/Re
 
         // 2. Controllo di destinazione
-        if (get(rTo, cTo) != E) return false;
+        if (get(rTo, cTo) != E) return false; // Destinazione occupata
 
         // 3. Controllo Cittadelle e Trono (Validazione atterraggio)
         if (rTo == THRONE[0] && cTo == THRONE[1]) {
-            if (pawn != K) return false;
+            if (pawn != K) return false; // Solo il Re può andare sul trono
         } else if (isCitadel(rTo, cTo)) {
-            if (pawn != K) { // Soldati e Nero:
-                if (!isCitadel(rFrom, cFrom)) return false;
-                if (isCitadel(rFrom, cFrom) && (Math.abs(rTo - rFrom) > 1 || Math.abs(cTo - cFrom) > 1)) return false;
+            // REGOLA ASHTON: Solo il Re può atterrare su una cittadella, E SOLO se è una casella di fuga
+            if (pawn != K) {
+                return false; // Pedoni (W/B) non possono MAI atterrare su una cittadella
             } else { // Re (K):
                 if (!containsCoord(ESCAPES, rTo, cTo)) {
-                    return false; // **IL RE NON PUÒ ATTERRARE SU UNA CITTADELLA NON-ESCAPE** (FIX)
+                    return false; // Il Re non può atterrare su una cittadella NON-escape (es. a4)
                 }
             }
         }
@@ -172,8 +222,20 @@ public class FastTablutState extends State implements Serializable {
         if (!isPathClear(rFrom, cFrom, rTo, cTo, pawn)) return false;
 
         // 5. Esegui la Mossa
-        set(rFrom, cFrom, (rFrom == THRONE[0] && cFrom == THRONE[1]) ? T : E);
-        set(rTo, cTo, pawn);
+        byte oldPawnAtFrom = get(rFrom, cFrom);
+        byte newPawnAtFrom = (rFrom == THRONE[0] && cFrom == THRONE[1]) ? T : E;
+        set(rFrom, cFrom, newPawnAtFrom);
+        // MODIFICA ZOBRIST: Aggiorna Zobrist per la casella 'from'
+        this.zobristKey ^= zobristTable[rFrom][cFrom][oldPawnAtFrom];
+        this.zobristKey ^= zobristTable[rFrom][cFrom][newPawnAtFrom];
+
+        byte oldPawnAtTo = get(rTo, cTo); // Sarà E
+        byte newPawnAtTo = pawn;
+        set(rTo, cTo, newPawnAtTo);
+        // MODIFICA ZOBRIST: Aggiorna Zobrist per la casella 'to'
+        this.zobristKey ^= zobristTable[rTo][cTo][oldPawnAtTo];
+        this.zobristKey ^= zobristTable[rTo][cTo][newPawnAtTo];
+
 
         if (pawn == K) {
             this.kingRow = rTo;
@@ -187,22 +249,35 @@ public class FastTablutState extends State implements Serializable {
         // 6. Check Catture
         checkCaptures(rTo, cTo, pawn);
 
-        // 7. Controlla Sconfitta/Vittoria
+        // 7. Controlla Sconfitta/Vittoria (post-cattura)
         if (this.turn != Turn.WHITEWIN && this.kingRow == -1) {
             this.turn = Turn.BLACKWIN;
         }
         if (this.turn != Turn.WHITEWIN && this.turn != Turn.BLACKWIN) {
+            // Controlli aggiuntivi di stallo/vittoria materiale
             if (this.whitePawnsCount == 0 && this.kingRow == -1) { this.turn = Turn.BLACKWIN; }
             if (this.blackPawnsCount == 0) { this.turn = Turn.WHITEWIN; }
         }
 
-        // 8. Cambia Turno
+        // 8. Cambia Turno (se il gioco non è finito)
         if (this.turn != Turn.WHITEWIN && this.turn != Turn.BLACKWIN) {
             if (this.turn.equals(Turn.WHITE)) this.turn = Turn.BLACK;
             else if (this.turn.equals(Turn.BLACK)) this.turn = Turn.WHITE;
+
+            this.zobristKey ^= zobristTurnBlack; // MODIFICA ZOBRIST: Aggiorna hash per il cambio turno
         }
 
         return true;
+    }
+
+    /**
+     * Metodo helper per aggiornare lo Zobrist Key durante una cattura.
+     * Deve essere chiamato PRIMA di modificare il tabellone.
+     */
+    private void updateZobristKeyForRemoval(int r, int c) {
+        byte oldPawn = get(r, c);
+        this.zobristKey ^= zobristTable[r][c][oldPawn]; // Rimuovi pedone vecchio
+        this.zobristKey ^= zobristTable[r][c][E];     // Aggiungi pedone vuoto
     }
 
     private void checkCaptures(int rLast, int cLast, byte movedPawn) {
@@ -218,30 +293,36 @@ public class FastTablutState extends State implements Serializable {
 
             if (rOpp < 0 || rOpp >= BOARD_SIZE || cOpp < 0 || cOpp >= BOARD_SIZE) continue;
 
-            // 1. C'è un Re o un Soldato Avversario?
-            if (get(rOpp, cOpp) == opponent) {
+            byte opponentPawn = get(rOpp, cOpp);
+
+            // 1. C'è un Soldato Avversario?
+            if (opponentPawn == opponent) {
 
                 int rWall = rOpp + dr;
                 int cWall = cOpp + dc;
 
                 boolean isWall = false;
                 if (rWall < 0 || rWall >= BOARD_SIZE || cWall < 0 || cWall >= BOARD_SIZE) {
-                    isWall = true; // Bordo del tabellone
+                    isWall = false; // Bordo del tabellone NON è un muro per i soldati
                 } else {
                     byte wallPawn = get(rWall, cWall);
-                    if (wallPawn == movedPawn || wallPawn == K || (rWall == THRONE[0] && cWall == THRONE[1]) || isCitadel(rWall, cWall)) {
+                    // REGOLA ASHTON: Il muro può essere un alleato (movedPawn o K), il Trono (T) o una Cittadella
+                    if (wallPawn == movedPawn || (movedPawn == W && wallPawn == K) || wallPawn == T || isCitadel(rWall, cWall)) {
                         isWall = true;
                     }
                 }
 
                 if (isWall) {
+                    // MODIFICA ZOBRIST: Aggiorna hash prima di rimuovere
+                    updateZobristKeyForRemoval(rOpp, cOpp);
+
                     if (get(rOpp, cOpp) == W) whitePawnsCount--;
                     if (get(rOpp, cOpp) == B) blackPawnsCount--;
                     set(rOpp, cOpp, E);
                 }
             }
             // 2. Check Cattura RE
-            else if (get(rOpp, cOpp) == K) {
+            else if (opponentPawn == K) {
                 if (movedPawn != B) continue; // Solo il Nero può catturare
 
                 int wallCount = 0;
@@ -251,28 +332,99 @@ public class FastTablutState extends State implements Serializable {
                     int rKWall = rOpp + kDir[0];
                     int cKWall = cOpp + kDir[1];
 
+                    // REGOLA ASHTON: Il bordo del tabellone NON conta come muro per il Re
                     if (rKWall < 0 || rKWall >= BOARD_SIZE || cKWall < 0 || cKWall >= BOARD_SIZE) {
-                        wallCount++; // Bordo
                         continue;
                     }
 
                     byte kWall = get(rKWall, cKWall);
-                    if (kWall == B || (rKWall == THRONE[0] && cKWall == THRONE[1]) || isCitadel(rKWall, cKWall)) {
+                    // Muro per il Re è: Pedone Nero (B), Trono (T), o Cittadella
+                    if (kWall == B || kWall == T || isCitadel(rKWall, cKWall)) {
                         wallCount++;
                     }
                 }
 
                 boolean isKingCaptured = false;
+                boolean isKingOnThrone = (rOpp == THRONE[0] && cOpp == THRONE[1]);
+                boolean isKingAdjThrone = !isKingOnThrone &&
+                        (Math.abs(rOpp - THRONE[0]) + Math.abs(cOpp - THRONE[1]) == 1);
 
-                if (rOpp == THRONE[0] && cOpp == THRONE[1] && wallCount == 4) {
+                if (isKingOnThrone && wallCount == 4) {
                     isKingCaptured = true; // 4 lati sul Trono
-                } else if (wallCount >= 3 && (rOpp == THRONE[0] || cOpp == THRONE[1] || containsCoord(CITADELS, rOpp, cOpp))) {
-                    isKingCaptured = true; // 3 lati se adiacente a Trono/Cittadella/Bordo
-                } else if (wallCount == 4) {
-                    isKingCaptured = true; // 4 lati ovunque
+                } else if (isKingAdjThrone && wallCount == 3) {
+                    isKingCaptured = true; // 3 lati se adiacente al Trono
+                } else if (!isKingOnThrone && !isKingAdjThrone && wallCount == 2) {
+                    // REGOLA ASHTON: Se il re è in campo aperto (non sul trono o adiacente),
+                    // bastano 2 Neri (o 1 Nero e 1 Cittadella/Trono) per catturarlo.
+                    // La logica precedente (wallCount) copre già Nero+Cittadella/Trono.
+                    // Dobbiamo verificare la cattura 2-lati Nero-Nero.
+
+                    // Controlliamo se è una cattura N-K-N (orizzontale o verticale)
+                    int rWall = rOpp + dr;
+                    int cWall = cOpp + dc;
+                    int rWallOpp = rOpp - dr; // Muro opposto
+                    int cWallOpp = cOpp - dc; // Muro opposto
+
+                    if(get(rWall, cWall) == B && get(rWallOpp, cWallOpp) == B) {
+                        isKingCaptured = true;
+                    }
                 }
 
+                // NOTA: La logica di cattura del Re in Ashton è complessa.
+                // QUESTA E' UNA SEMPLIFICAZIONE. La vera regola Ashton dice:
+                // 1. Se Re sul Trono: servono 4 Neri.
+                // 2. Se Re adiacente al Trono: servono 3 Neri (sui 3 lati liberi).
+                // 3. Se Re su una Cittadella (impossibile atterrare, ma forse per mossa precedente?): 4 Neri.
+                // 4. Se Re altrove: 2 Neri (in linea, N-K-N) O (1 Nero e 1 Cittadella/Trono, N-K-T/C).
+
+                // La logica `wallCount` è più vicina alle regole "moderne" che Ashton.
+                // Manteniamo la logica `wallCount` per ora, è più semplice.
+                // Sostituiamo la logica di cattura del Re con quella ufficiale.
+
+                isKingCaptured = false; // Reset
+
+                // Controlla i 4 lati del Re (rOpp, cOpp)
+                byte north = get(rOpp - 1, cOpp);
+                byte south = get(rOpp + 1, cOpp);
+                byte west = get(rOpp, cOpp - 1);
+                byte east = get(rOpp, cOpp + 1);
+
+                // Muri ostili (Nero, Trono, Cittadella)
+                boolean northWall = (north == B || (rOpp - 1 == THRONE[0] && cOpp == THRONE[1]) || isCitadel(rOpp - 1, cOpp));
+                boolean southWall = (south == B || (rOpp + 1 == THRONE[0] && cOpp == THRONE[1]) || isCitadel(rOpp + 1, cOpp));
+                boolean westWall = (west == B || (rOpp == THRONE[0] && cOpp - 1 == THRONE[1]) || isCitadel(rOpp, cOpp - 1));
+                boolean eastWall = (east == B || (rOpp == THRONE[0] && cOpp + 1 == THRONE[1]) || isCitadel(rOpp, cOpp + 1));
+
+                if (isKingOnThrone) {
+                    if (northWall && southWall && westWall && eastWall) isKingCaptured = true;
+                } else if (isKingAdjThrone) {
+                    // Adiacente, es. (3,4) (sopra il trono)
+                    if (rOpp == THRONE[0] - 1 && cOpp == THRONE[1]) {
+                        if (northWall && westWall && eastWall) isKingCaptured = true;
+                    }
+                    // (5,4) (sotto il trono)
+                    else if (rOpp == THRONE[0] + 1 && cOpp == THRONE[1]) {
+                        if (southWall && westWall && eastWall) isKingCaptured = true;
+                    }
+                    // (4,3) (a ovest del trono)
+                    else if (rOpp == THRONE[0] && cOpp == THRONE[1] - 1) {
+                        if (northWall && southWall && westWall) isKingCaptured = true;
+                    }
+                    // (4,5) (a est del trono)
+                    else if (rOpp == THRONE[0] && cOpp == THRONE[1] + 1) {
+                        if (northWall && southWall && eastWall) isKingCaptured = true;
+                    }
+                } else {
+                    // Caso generale: cattura a 2 lati
+                    if (northWall && southWall) isKingCaptured = true; // Cattura verticale
+                    if (westWall && eastWall) isKingCaptured = true;   // Cattura orizzontale
+                }
+
+
                 if (isKingCaptured) {
+                    // MODIFICA ZOBRIST: Aggiorna hash prima di rimuovere
+                    updateZobristKeyForRemoval(rOpp, cOpp);
+
                     set(rOpp, cOpp, E);
                     this.kingRow = -1;
                     this.turn = Turn.BLACKWIN;
@@ -293,45 +445,50 @@ public class FastTablutState extends State implements Serializable {
             for (int c = 0; c < BOARD_SIZE; c++) {
                 byte pawn = get(r, c);
 
+                // Controlla se la pedina appartiene al giocatore di turno
                 if (pawn == myPawnType || (pawn == K && this.turn.equals(Turn.WHITE))) {
 
                     int[][] directions = {{0, 1}, {0, -1}, {1, 0}, {-1, 0}};
 
+                    // Itera per le 4 direzioni
                     for (int[] dir : directions) {
                         int dr = dir[0];
                         int dc = dir[1];
 
+                        // Itera per la lunghezza della mossa
                         for (int steps = 1; steps < BOARD_SIZE; steps++) {
                             int rTo = r + dr * steps;
                             int cTo = c + dc * steps;
 
+                            // Fuori dal tabellone, cambia direzione
                             if (rTo < 0 || rTo >= BOARD_SIZE || cTo < 0 || cTo >= BOARD_SIZE) break;
 
                             // 1. Controllo ostacoli/destinazione occupata
                             if (get(rTo, cTo) != E) break;
 
-                            // 2. Controllo Percorso (necessario per Throne/Citadel in mezzo)
+                            // 2. Controllo Percorso (necessario per Trono/Cittadelle bloccanti)
+                            // NOTA: isPathClear controlla da (r,c) a (rTo, cTo) ESCLUDENDO (rTo, cTo)
                             if (!isPathClear(r, c, rTo, cTo, pawn)) break;
 
                             // 3. Controllo Restrizioni di Arrivo (come in applyMove)
                             if (rTo == THRONE[0] && cTo == THRONE[1]) {
-                                if (pawn != K) break;
+                                if (pawn != K) break; // Solo il Re può atterrare sul trono
                             } else if (isCitadel(rTo, cTo)) {
                                 if (pawn != K) {
-                                    if (!isCitadel(r, c)) break;
-                                    if (isCitadel(r, c) && steps > 1) break;
+                                    break; // Pedoni (W/B) non possono atterrare su cittadelle
                                 } else { // Re (K):
                                     if (!containsCoord(ESCAPES, rTo, cTo)) {
-                                        break; // Re su Cittadella NON-Escape ILLEGALE
+                                        break; // Re non può atterrare su Cittadella NON-Escape
                                     }
                                 }
                             }
 
+                            // Se tutti i controlli passano, la mossa è legale
                             try {
                                 String from = getBox(r, c);
                                 String to = getBox(rTo, cTo);
                                 legalMoves.add(new Action(from, to, this.getTurn()));
-                            } catch (IOException e) { /* Ignora */ }
+                            } catch (IOException e) { /* Ignora (non dovrebbe mai accadere) */ }
                         }
                     }
                 }
@@ -343,7 +500,6 @@ public class FastTablutState extends State implements Serializable {
 
     // --- Metodi di compatibilità Framework ---
 
-    // ... (omissis, metodi di override come getPawn, removePawn, getBoard, hashCode, equals)
     private Pawn byteToPawn(byte b) {
         if (b == W) return Pawn.WHITE;
         if (b == B) return Pawn.BLACK;
@@ -357,12 +513,23 @@ public class FastTablutState extends State implements Serializable {
         return byteToPawn(get(row, column));
     }
 
+    /**
+     * Sovrascrive removePawn per aggiornare anche lo Zobrist Key.
+     * Usato principalmente dal framework esterno (es. Tester),
+     * la logica interna usa checkCaptures.
+     */
     @Override
     public void removePawn(int row, int column) {
         byte old = get(row, column);
+        if (old == E || old == T) return; // Non rimuovere caselle vuote
+
+        // MODIFICA ZOBRIST: Aggiorna hash prima di rimuovere
+        updateZobristKeyForRemoval(row, column);
+
         if (old == W) whitePawnsCount--;
         if (old == B) blackPawnsCount--;
         if (old == K) kingRow = -1;
+
         set(row, column, E);
     }
 
@@ -382,21 +549,30 @@ public class FastTablutState extends State implements Serializable {
         return col + "" + (row + 1);
     }
 
+    /**
+     * Sostituisce l'hashCode() di default con lo Zobrist Key.
+     */
     @Override
     public int hashCode() {
-        final int prime = 31;
-        int result = 1;
-        result = prime * result + Arrays.hashCode(fastBoard);
-        result = prime * result + ((this.turn == null) ? 0 : this.turn.hashCode());
-        return result;
+        return (int) (this.zobristKey ^ (this.zobristKey >>> 32));
     }
 
+    /**
+     * Sostituisce l'equals() di default per usare lo Zobrist Key e il turno.
+     */
     @Override
     public boolean equals(Object obj) {
         if (this == obj) return true;
-        if (obj == null || getClass() != obj.getClass()) return false;
+        if (obj == null || !(obj instanceof FastTablutState)) return false;
+
         FastTablutState other = (FastTablutState) obj;
-        if (!Arrays.equals(fastBoard, other.fastBoard)) return false;
-        return turn == other.turn;
+
+        // Confronto veloce
+        if (this.zobristKey != other.zobristKey) return false;
+        if (this.turn != other.turn) return false;
+
+        // Controllo di sicurezza completo (opzionale se credi ciecamente nell'hash)
+        // return Arrays.equals(fastBoard, other.fastBoard);
+        return true;
     }
 }

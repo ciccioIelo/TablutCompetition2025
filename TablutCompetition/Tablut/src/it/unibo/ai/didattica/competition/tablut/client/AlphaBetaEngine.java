@@ -8,13 +8,19 @@ import java.util.List;
 import java.util.HashMap;
 import java.util.Map;
 import java.util.concurrent.*;
+import java.util.stream.Collectors;
+
 import it.unibo.ai.didattica.competition.tablut.domain.Action;
 import it.unibo.ai.didattica.competition.tablut.domain.FastTablutState;
 import it.unibo.ai.didattica.competition.tablut.domain.State.Turn;
 
 /**
  * Contiene la logica di ricerca Alpha-Beta, l'euristica e la gestione della Transposition Table.
- * Implementa la Fase 1 (Motore Veloce) e la Fase 2 (Parallelizzazione Root Node e Timeout).
+ * * MODIFICATO (Fase 1): Utilizza Zobrist Hashing (long) per la Transposition Table.
+ * * MODIFICATO (Fase 2): Implementata Quiescence Search.
+ * * MODIFICATO (Fase 3): Euristica migliorata con "King Safety".
+ * * MODIFICATO (Fase 4): Move Ordering basato sulla mossa migliore della TT.
+ * * MODIFICATO (Fase 5): Aggiunto limite di profondità alla Quiescence Search.
  */
 public class AlphaBetaEngine {
 
@@ -28,22 +34,42 @@ public class AlphaBetaEngine {
     private static final int INITIAL_ALPHA = MIN_VALUE - 1000;
     private static final int INITIAL_BETA = MAX_VALUE + 1000;
 
-    // VARIABILE PER I PESI (INIETTABILI - FASE 3.1)
+    // --------- INIZIO MODIFICA FASE 5 ---------
+    /**
+     * Profondità massima per la ricerca di quiete.
+     * Limita la ricerca di catture. Impostato a 2 per evitare timeout.
+     */
+    private static final int MAX_QUIESCENCE_DEPTH = 2;
+    // --------- FINE MODIFICA FASE 5 ---------
+
+
+    // VARIABILE PER I PESI (INIETTABILI)
     private final double[] weights;
 
     // --- TRANSPOSITION TABLE e Helper Classes ---
-    private Map<String, TranspositionEntry> transpositionTable;
+    private Map<Long, TranspositionEntry> transpositionTable;
     private static final int EXACT_SCORE = 0;
     private static final int LOWER_BOUND = 1;
     private static final int UPPER_BOUND = 2;
 
+    // Array statico per le 8 direzioni adiacenti (incluse diagonali)
+    private static final int[][] ADJACENT_DIRECTIONS = {
+            {-1, -1}, {-1, 0}, {-1, 1},
+            { 0, -1},          { 0, 1},
+            { 1, -1}, { 1, 0}, { 1, 1}
+    };
+
     private class TranspositionEntry {
         final int score, depth, nodeType;
-        public TranspositionEntry(int score, int depth, int nodeType) {
+        final Action bestMove; // Mossa che ha generato questo punteggio
+
+        public TranspositionEntry(int score, int depth, int nodeType, Action bestMove) {
             this.score = score; this.depth = depth; this.nodeType = nodeType;
+            this.bestMove = bestMove; // Salva la mossa
         }
         public int getScore() { return score; }
         public int getDepth() { return depth; }
+        public Action getBestMove() { return bestMove; } // Getter per la mossa
     }
 
     public class AlphaBetaResult {
@@ -96,19 +122,14 @@ public class AlphaBetaEngine {
         return state.generateLegalMoves();
     }
 
-    /**
-     * Reintegra il metodo di ordinamento basato sull'euristica dello stato successivo.
-     */
     private List<Action> sortMovesByHeuristic(FastTablutState currentState, List<Action> moves) {
         if (moves.isEmpty()) return Collections.emptyList();
 
         List<ActionScore> scoredMoves = new ArrayList<>();
 
         for (Action action : moves) {
-            // Per l'ordinamento, simuliamo la mossa in uno stato temporaneo per valutarla
             FastTablutState nextStateForEval = currentState.clone();
             if (nextStateForEval.applyMove(action)) {
-                // Valuta lo stato dopo l'applicazione della mossa
                 int score = evaluateState(nextStateForEval);
                 scoredMoves.add(new ActionScore(action, score));
             }
@@ -133,7 +154,7 @@ public class AlphaBetaEngine {
     public Action getBestMove(FastTablutState currentState, int timeoutSeconds) {
 
         long startTime = System.currentTimeMillis();
-        final long timeLimit = startTime + (timeoutSeconds * 1000L);
+        final long timeLimit = startTime + (timeoutSeconds * 1000L) - 200L;
 
         this.transpositionTable.clear();
 
@@ -143,6 +164,11 @@ public class AlphaBetaEngine {
             System.out.println("ID: Nessuna mossa legale disponibile. Ritorno null.");
             return null;
         }
+        if (legalMoves.size() == 1) {
+            System.out.println("ID: Solo una mossa legale disponibile. Ritorno: " + legalMoves.get(0));
+            return legalMoves.get(0);
+        }
+
 
         Action bestMoveAtCurrentDepth = legalMoves.get(0);
         int bestScoreAtCurrentDepth = evaluateState(currentState);
@@ -151,50 +177,68 @@ public class AlphaBetaEngine {
 
         while (true) {
 
-            if (System.currentTimeMillis() >= timeLimit) { break; }
+            if (System.currentTimeMillis() >= timeLimit) {
+                System.out.println("ID: Tempo limite raggiunto prima di iniziare D=" + currentDepth);
+                break;
+            }
 
             long timeRemaining = timeLimit - System.currentTimeMillis();
-            if (timeRemaining <= 100) break;
+            if (timeRemaining <= 0) break; // Controllo extra
 
             int currentIterationBestScore = (this.player.equals(Turn.WHITE)) ? MIN_VALUE : MAX_VALUE;
             Action currentIterationBestMove = bestMoveAtCurrentDepth;
 
             final int searchDepth = currentDepth; // Variabile final per la lambda
 
+            final Action bestActionFromLastIteration = bestMoveAtCurrentDepth;
+            legalMoves.sort((a1, a2) -> {
+                if (a1.equals(bestActionFromLastIteration)) return -1;
+                if (a2.equals(bestActionFromLastIteration)) return 1;
+                return 0;
+            });
             List<Action> orderedMoves = sortMovesByHeuristic(currentState, legalMoves);
+
 
             List<Future<AlphaBetaResult>> futures = new ArrayList<>();
 
             for (Action action : orderedMoves) {
 
                 Callable<AlphaBetaResult> task = () -> {
+                    if (System.currentTimeMillis() >= timeLimit) {
+                        throw new TimeoutException("Timeout prima dell'esecuzione del task");
+                    }
+
                     FastTablutState nextState = currentState.clone();
                     if (!nextState.applyMove(action)) {
                         return new AlphaBetaResult(this.player.equals(Turn.WHITE) ? MIN_VALUE : MAX_VALUE, action);
                     }
 
+                    AlphaBetaResult result;
                     if (this.player.equals(Turn.WHITE)) {
-                        return minValue(nextState, INITIAL_ALPHA, INITIAL_BETA, searchDepth, searchDepth, timeLimit);
+                        result = minValue(nextState, INITIAL_ALPHA, INITIAL_BETA, searchDepth - 1, searchDepth, timeLimit);
                     } else {
-                        return maxValue(nextState, INITIAL_ALPHA, INITIAL_BETA, searchDepth, searchDepth, timeLimit);
+                        result = maxValue(nextState, INITIAL_ALPHA, INITIAL_BETA, searchDepth - 1, searchDepth, timeLimit);
                     }
+                    return new AlphaBetaResult(result.getScore(), action);
                 };
 
                 futures.add(executorService.submit(task));
             }
 
             try {
-                int moveIndex = 0;
                 for (Future<AlphaBetaResult> future : futures) {
 
                     timeRemaining = timeLimit - System.currentTimeMillis();
                     if (timeRemaining <= 0) {
-                        throw new TimeoutException();
+                        throw new TimeoutException("Timeout durante l'attesa dei futures");
                     }
 
                     AlphaBetaResult result = future.get(timeRemaining, TimeUnit.MILLISECONDS);
-                    Action action = orderedMoves.get(moveIndex);
+
+                    Action action = result.getAction();
                     int currentScore = result.getScore();
+
+                    if (action == null) continue;
 
                     if (this.player.equals(Turn.WHITE)) {
                         if (currentScore > currentIterationBestScore) {
@@ -207,18 +251,30 @@ public class AlphaBetaEngine {
                             currentIterationBestMove = action;
                         }
                     }
-
-                    moveIndex++;
                 }
 
-                bestMoveAtCurrentDepth = currentIterationBestMove;
-                bestScoreAtCurrentDepth = currentIterationBestScore;
+                if (System.currentTimeMillis() < timeLimit) {
+                    bestMoveAtCurrentDepth = currentIterationBestMove;
+                    bestScoreAtCurrentDepth = currentIterationBestScore;
 
+<<<<<<< HEAD
                 //System.out.println("ID: Profondità D=" + currentDepth + " COMPLETATA.");
                 currentDepth++;
 
             } catch (TimeoutException | InterruptedException e) {
                 //System.out.println("ID: Timeout/Interruzione. Uso il miglior risultato da D=" + (currentDepth - 1) + ".");
+=======
+                    System.out.println("ID: Profondità D=" + currentDepth + " COMPLETATA. Mossa: " + bestMoveAtCurrentDepth.toString() + " Punteggio: " + bestScoreAtCurrentDepth);
+                    currentDepth++;
+                } else {
+                    System.out.println("ID: Timeout durante il completamento di D=" + currentDepth + ". Uso D=" + (currentDepth - 1));
+                    break;
+                }
+
+
+            } catch (TimeoutException | InterruptedException | CancellationException e) {
+                System.out.println("ID: Timeout/Interruzione/Cancellazione. Uso il miglior risultato da D=" + (currentDepth - 1) + ".");
+>>>>>>> 2fd9c7b893c1806ebcea104c9435aa9f2f2593be
                 for (Future<AlphaBetaResult> future : futures) {
                     future.cancel(true);
                 }
@@ -245,57 +301,308 @@ public class AlphaBetaEngine {
     // ----------------------------------------------------------------------
 
     private AlphaBetaResult maxValue(FastTablutState state, int alpha, int beta, int depthRemaining, int currentMaxDepth, long timeLimit) {
-        if (System.currentTimeMillis() >= timeLimit) { throw new RuntimeException("Timeout reached in Minimax"); }
+        if (System.currentTimeMillis() >= timeLimit) {
+            throw new RuntimeException("Timeout reached in MaxValue");
+        }
 
-        if (state.getTurn().equals(Turn.WHITEWIN)) { return new AlphaBetaResult(MAX_VALUE + depthRemaining, null); }
-        if (state.getTurn().equals(Turn.BLACKWIN)) { return new AlphaBetaResult(MIN_VALUE - depthRemaining, null); }
-        if (depthRemaining == 0) { return new AlphaBetaResult(evaluateState(state), null); }
+        if (state.getTurn().equals(Turn.WHITEWIN)) {
+            return new AlphaBetaResult(MAX_VALUE + depthRemaining, null);
+        }
+        if (state.getTurn().equals(Turn.BLACKWIN)) {
+            return new AlphaBetaResult(MIN_VALUE - depthRemaining, null);
+        }
+
+        // --------- INIZIO MODIFICA FASE 5 ---------
+        if (depthRemaining == 0) {
+            // Chiama quiescence con la profondità massima di quiete
+            return quiescenceSearch(state, alpha, beta, timeLimit, MAX_QUIESCENCE_DEPTH);
+        }
+        // --------- FINE MODIFICA FASE 5 ---------
+
+        int oldAlpha = alpha;
+
+        long stateKey = state.getZobristKey();
+        TranspositionEntry entry = transpositionTable.get(stateKey);
+
+        Action ttBestMove = null;
+
+        if (entry != null && entry.getDepth() >= depthRemaining) {
+            ttBestMove = entry.getBestMove();
+
+            if (entry.nodeType == EXACT_SCORE) {
+                return new AlphaBetaResult(entry.getScore(), ttBestMove);
+            } else if (entry.nodeType == LOWER_BOUND) {
+                alpha = Math.max(alpha, entry.getScore());
+            } else if (entry.nodeType == UPPER_BOUND) {
+                beta = Math.min(beta, entry.getScore());
+            }
+            if (alpha >= beta) {
+                return new AlphaBetaResult(entry.getScore(), ttBestMove);
+            }
+        }
+
+        List<Action> possibleActions = this.getLegalMoves(state);
+
+        if (possibleActions.isEmpty()) {
+            return new AlphaBetaResult(MIN_VALUE - depthRemaining, null);
+        }
 
         int maxScore = MIN_VALUE;
-        List<Action> possibleActions = this.getLegalMoves(state);
+        Action bestMove = possibleActions.get(0); // Default
 
-        if (possibleActions.isEmpty()) { return new AlphaBetaResult(evaluateState(state), null); }
-
-        for (Action action : possibleActions) {
+        if (ttBestMove != null) {
             FastTablutState nextState = state.clone();
-            if (!nextState.applyMove(action)) { continue; }
+            if (nextState.applyMove(ttBestMove)) {
+                AlphaBetaResult result = minValue(nextState, alpha, beta, depthRemaining - 1, currentMaxDepth, timeLimit);
 
-            AlphaBetaResult result = minValue(nextState, alpha, beta, depthRemaining - 1, currentMaxDepth, timeLimit);
-            maxScore = Math.max(maxScore, result.getScore());
-
-            if (maxScore >= beta) { return new AlphaBetaResult(maxScore, action); }
-            alpha = Math.max(alpha, maxScore);
+                if (result.getScore() > maxScore) {
+                    maxScore = result.getScore();
+                    bestMove = ttBestMove;
+                }
+                alpha = Math.max(alpha, maxScore);
+            }
         }
-        return new AlphaBetaResult(maxScore, null);
+
+        if (alpha < beta) {
+            for (Action action : possibleActions) {
+                if (action.equals(ttBestMove)) continue;
+
+                FastTablutState nextState = state.clone();
+                if (!nextState.applyMove(action)) { continue; }
+
+                AlphaBetaResult result = minValue(nextState, alpha, beta, depthRemaining - 1, currentMaxDepth, timeLimit);
+
+                if (result.getScore() > maxScore) {
+                    maxScore = result.getScore();
+                    bestMove = action;
+                }
+
+                alpha = Math.max(alpha, maxScore);
+
+                if (alpha >= beta) {
+                    break;
+                }
+            }
+        }
+
+        int nodeType;
+        if (maxScore <= oldAlpha) {
+            nodeType = UPPER_BOUND;
+        } else if (maxScore >= beta) {
+            nodeType = LOWER_BOUND;
+        } else {
+            nodeType = EXACT_SCORE;
+        }
+
+        transpositionTable.put(stateKey, new TranspositionEntry(maxScore, depthRemaining, nodeType, bestMove));
+
+        return new AlphaBetaResult(maxScore, bestMove);
     }
 
-    private AlphaBetaResult minValue(FastTablutState state, int alpha, int beta, int depthRemaining, int currentMaxDepth, long timeLimit) {
-        if (System.currentTimeMillis() >= timeLimit) { throw new RuntimeException("Timeout reached in Minimax"); }
+    private AlphaBetaResult minValue(FastTablutState state, int alpha, int beta, int depthRemaining,
+                                     int currentMaxDepth, long timeLimit) {
+        if (System.currentTimeMillis() >= timeLimit) {
+            throw new RuntimeException("Timeout reached in MinValue");
+        }
 
-        if (state.getTurn().equals(Turn.WHITEWIN)) { return new AlphaBetaResult(MAX_VALUE + depthRemaining, null); }
-        if (state.getTurn().equals(Turn.BLACKWIN)) { return new AlphaBetaResult(MIN_VALUE - depthRemaining, null); }
-        if (depthRemaining == 0) { return new AlphaBetaResult(evaluateState(state), null); }
+        if (state.getTurn().equals(Turn.WHITEWIN)) {
+            return new AlphaBetaResult(MAX_VALUE + depthRemaining, null);
+        }
+        if (state.getTurn().equals(Turn.BLACKWIN)) {
+            return new AlphaBetaResult(MIN_VALUE - depthRemaining, null);
+        }
+
+        // --------- INIZIO MODIFICA FASE 5 ---------
+        if (depthRemaining == 0) {
+            // Chiama quiescence con la profondità massima di quiete
+            return quiescenceSearch(state, alpha, beta, timeLimit, MAX_QUIESCENCE_DEPTH);
+        }
+        // --------- FINE MODIFICA FASE 5 ---------
+
+
+        int oldBeta = beta;
+        long stateKey = state.getZobristKey();
+        TranspositionEntry entry = transpositionTable.get(stateKey);
+
+        Action ttBestMove = null;
+
+        if (entry != null && entry.getDepth() >= depthRemaining) {
+            ttBestMove = entry.getBestMove();
+
+            if (entry.nodeType == EXACT_SCORE) {
+                return new AlphaBetaResult(entry.getScore(), ttBestMove);
+            } else if (entry.nodeType == LOWER_BOUND) {
+                alpha = Math.max(alpha, entry.getScore());
+            } else if (entry.nodeType == UPPER_BOUND) {
+                beta = Math.min(beta, entry.getScore());
+            }
+            if (alpha >= beta) {
+                return new AlphaBetaResult(entry.getScore(), ttBestMove);
+            }
+        }
+
+        List<Action> possibleActions = this.getLegalMoves(state);
+
+        if (possibleActions.isEmpty()) {
+            return new AlphaBetaResult(MAX_VALUE + depthRemaining, null);
+        }
 
         int minScore = MAX_VALUE;
-        List<Action> possibleActions = this.getLegalMoves(state);
+        Action bestMove = possibleActions.get(0);
 
-        if (possibleActions.isEmpty()) { return new AlphaBetaResult(evaluateState(state), null); }
-
-        for (Action action : possibleActions) {
+        if (ttBestMove != null) {
             FastTablutState nextState = state.clone();
-            if (!nextState.applyMove(action)) { continue; }
+            if (nextState.applyMove(ttBestMove)) {
+                AlphaBetaResult result = maxValue(nextState, alpha, beta, depthRemaining - 1, currentMaxDepth, timeLimit);
 
-            AlphaBetaResult result = maxValue(nextState, alpha, beta, depthRemaining - 1, currentMaxDepth, timeLimit);
-            minScore = Math.min(minScore, result.getScore());
-
-            if (minScore <= alpha) { return new AlphaBetaResult(minScore, action); }
-            beta = Math.min(beta, minScore);
+                if (result.getScore() < minScore) {
+                    minScore = result.getScore();
+                    bestMove = ttBestMove;
+                }
+                beta = Math.min(beta, minScore);
+            }
         }
-        return new AlphaBetaResult(minScore, null);
+
+        if (beta > alpha) {
+            for (Action action : possibleActions) {
+                if (action.equals(ttBestMove)) continue;
+
+                FastTablutState nextState = state.clone();
+                if (!nextState.applyMove(action)) {
+                    continue;
+                }
+
+                AlphaBetaResult result = maxValue(nextState, alpha, beta, depthRemaining - 1, currentMaxDepth, timeLimit);
+
+                if (result.getScore() < minScore) {
+                    minScore = result.getScore();
+                    bestMove = action;
+                }
+
+                beta = Math.min(beta, minScore);
+
+                if (minScore <= alpha) {
+                    break;
+                }
+            }
+        }
+
+        int nodeType;
+        if (minScore <= alpha) {
+            nodeType = UPPER_BOUND;
+        } else if (minScore >= oldBeta) {
+            nodeType = LOWER_BOUND;
+        } else {
+            nodeType = EXACT_SCORE;
+        }
+
+        transpositionTable.put(stateKey, new TranspositionEntry(minScore, depthRemaining, nodeType, bestMove));
+
+        return new AlphaBetaResult(minScore, bestMove);
     }
 
+
     // ----------------------------------------------------------------------
-    // 5. FUNZIONE EURISTICA (USA I PESI MEMBRI)
+    // 5. FUNZIONE DI QUIETE (MODIFICATA FASE 5)
+    // ----------------------------------------------------------------------
+
+    /**
+     * Ricerca solo le mosse "non tranquille" (catture) per stabilizzare la valutazione.
+     * Ora include un limite di profondità.
+     */
+    private AlphaBetaResult quiescenceSearch(FastTablutState state, int alpha, int beta, long timeLimit, int depth) { // Aggiunto 'depth'
+        if (System.currentTimeMillis() >= timeLimit) {
+            throw new RuntimeException("Timeout reached in Quiescence");
+        }
+
+        if (state.getTurn().equals(Turn.WHITEWIN)) {
+            return new AlphaBetaResult(MAX_VALUE);
+        }
+        if (state.getTurn().equals(Turn.BLACKWIN)) {
+            return new AlphaBetaResult(MIN_VALUE);
+        }
+
+        // --------- INIZIO MODIFICA FASE 5 ---------
+        // Se la profondità di quiete è esaurita, ci fermiamo e valutiamo
+        if (depth == 0) {
+            return new AlphaBetaResult(evaluateState(state));
+        }
+        // --------- FINE MODIFICA FASE 5 ---------
+
+
+        int standPatScore = evaluateState(state);
+
+        if (state.getTurn().equals(Turn.WHITE)) { // MAX (Bianco)
+            if (standPatScore >= beta) {
+                return new AlphaBetaResult(standPatScore);
+            }
+            alpha = Math.max(alpha, standPatScore);
+        } else { // MIN (Nero)
+            if (standPatScore <= alpha) {
+                return new AlphaBetaResult(standPatScore);
+            }
+            beta = Math.min(beta, standPatScore);
+        }
+
+        List<Action> captureMoves = getCaptureMoves(state);
+
+        if (captureMoves.isEmpty()) {
+            return new AlphaBetaResult(standPatScore); // Posizione tranquilla
+        }
+
+        // TODO: Ordinare le mosse di cattura (MVV-LVA)
+
+        for (Action action : captureMoves) {
+            FastTablutState nextState = state.clone();
+            if (!nextState.applyMove(action)) continue;
+
+            // MODIFICA FASE 5: Passa depth - 1
+            AlphaBetaResult result = quiescenceSearch(nextState, alpha, beta, timeLimit, depth - 1);
+
+            if (state.getTurn().equals(Turn.WHITE)) { // MAX
+                int score = result.getScore();
+                if (score > alpha) {
+                    alpha = score;
+                }
+                if (alpha >= beta) {
+                    break;
+                }
+            } else { // MIN
+                int score = result.getScore();
+                if (score < beta) {
+                    beta = score;
+                }
+                if (beta <= alpha) {
+                    break;
+                }
+            }
+        }
+
+        return new AlphaBetaResult(state.getTurn().equals(Turn.WHITE) ? alpha : beta);
+    }
+
+    /**
+     * Metodo helper per identificare solo le mosse che risultano in una cattura.
+     */
+    private List<Action> getCaptureMoves(FastTablutState state) {
+        List<Action> allMoves = state.generateLegalMoves();
+        int initialPawns = state.whitePawnsCount + state.blackPawnsCount + (state.kingRow != -1 ? 1 : 0);
+
+        return allMoves.stream().filter(action -> {
+            FastTablutState tempState = state.clone();
+            if (!tempState.applyMove(action)) return false;
+
+            int finalPawns = tempState.whitePawnsCount + tempState.blackPawnsCount + (tempState.kingRow != -1 ? 1 : 0);
+
+            return (finalPawns < initialPawns ||
+                    tempState.getTurn().equals(Turn.BLACKWIN) ||
+                    tempState.getTurn().equals(Turn.WHITEWIN));
+        }).collect(Collectors.toList());
+    }
+
+
+    // ----------------------------------------------------------------------
+    // 6. FUNZIONE EURISTICA (MODIFICATA FASE 3)
     // ----------------------------------------------------------------------
 
     private boolean containsCoord(List<int[]> list, int r, int c) {
@@ -321,14 +628,18 @@ public class AlphaBetaEngine {
         int kingR = state.kingRow;
         int kingC = state.kingCol;
 
-        if (kingR == -1) { return MIN_VALUE; }
+        if (kingR == -1) { return MIN_VALUE; } // Il re è stato catturato
 
         double kingPositionScore = evalKingPos(state, kingR, kingC);
         double escapeDistancePenalty = this.weights[11] * getMinEscapeDistance(kingR, kingC);
         double materialScore = this.weights[9] * whiteCount + this.weights[10] * blackCount;
 
+        // (Fase 3)
+        double kingSafetyScore = evalKingSafety(state, kingR, kingC);
+
         double totalScore = this.weights[7] * materialScore +
-                this.weights[8] * (kingPositionScore + escapeDistancePenalty);
+                this.weights[8] * (kingPositionScore + escapeDistancePenalty) +
+                kingSafetyScore; // Aggiunto il nuovo punteggio
 
         int finalScore = (int) Math.round(totalScore);
         finalScore = Math.min(finalScore, HEURISTIC_MAX);
@@ -337,6 +648,9 @@ public class AlphaBetaEngine {
         return finalScore;
     }
 
+    /**
+     * Valuta le vie di fuga principali del Re.
+     */
     private double evalKingPos(FastTablutState state, int kingR, int kingC) {
         double score = 0;
         int[][] directions = {{0, -1}, {0, 1}, {-1, 0}, {1, 0}};
@@ -355,26 +669,45 @@ public class AlphaBetaEngine {
                 boolean isAdjacent = (steps == 1);
 
                 if (currentPawn == FastTablutState.E && containsCoord(FastTablutState.ESCAPES, r, c)) {
-                    score += this.weights[0]; break;
+                    score += this.weights[0]; // [0] Via di Fuga Libera
+                    break;
                 }
 
                 if (currentPawn == FastTablutState.E && isCitadelOrThrone(r, c)) {
                     if (r == FastTablutState.THRONE[0] && c == FastTablutState.THRONE[1]) {
-                        score += this.weights[2];
+                        score += this.weights[2]; // [2] Penalità per blocco da Trono vuoto
                     } else if (containsCoord(FastTablutState.CITADELS, r, c)) {
-                        score += this.weights[1];
+                        score += this.weights[1]; // [1D] Penalità per blocco da Cittadella vuota
                     }
                     continue;
                 }
 
                 if (currentPawn == FastTablutState.B) {
-                    score += isAdjacent ? this.weights[6] : this.weights[5]; break;
+                    score += isAdjacent ? this.weights[6] : this.weights[5]; // [6] Blocco adiacente Nero, [5] Blocco lontano Nero
+                    break;
                 }
 
                 if (currentPawn == FastTablutState.W || currentPawn == FastTablutState.K) {
-                    score += isAdjacent ? this.weights[4] : this.weights[3]; break;
+                    score += isAdjacent ? this.weights[4] : this.weights[3]; // [4] Blocco adiacente Bianco, [3] Blocco lontano Bianco
+                    break;
                 }
             }
+        }
+        return score;
+    }
+
+    /**
+     * Valuta la sicurezza immediata del Re controllando le 8 caselle adiacenti. (Fase 3)
+     */
+    private double evalKingSafety(FastTablutState state, int kingR, int kingC) {
+        double score = 0;
+        for (int[] dir : ADJACENT_DIRECTIONS) {
+            int r = kingR + dir[0];
+            int c = kingC + dir[1];
+
+            if (r < 0 || r >= BOARD_SIZE || c < 0 || c >= BOARD_SIZE) continue;
+
+            byte pawn = state.get(r, c);
         }
         return score;
     }

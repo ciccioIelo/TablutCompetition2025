@@ -118,7 +118,7 @@
 
 	    <!-- TARGET PER IL TUO AGENTE (AGGIUNTO) -->
 	    <target name="mywhite" depends="compile">
-	        <java fork="true" classname="${agent2.name}">
+	        <java fork="true" classname="${agent.name}">
 	            <classpath>
 	                <pathelement path="lib/gson-2.2.2.jar" />
 	                <pathelement location="build" />

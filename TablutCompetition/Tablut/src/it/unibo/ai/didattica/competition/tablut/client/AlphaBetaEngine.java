@@ -257,13 +257,6 @@ public class AlphaBetaEngine {
                     bestMoveAtCurrentDepth = currentIterationBestMove;
                     bestScoreAtCurrentDepth = currentIterationBestScore;
 
-<<<<<<< HEAD
-                //System.out.println("ID: Profondità D=" + currentDepth + " COMPLETATA.");
-                currentDepth++;
-
-            } catch (TimeoutException | InterruptedException e) {
-                //System.out.println("ID: Timeout/Interruzione. Uso il miglior risultato da D=" + (currentDepth - 1) + ".");
-=======
                     System.out.println("ID: Profondità D=" + currentDepth + " COMPLETATA. Mossa: " + bestMoveAtCurrentDepth.toString() + " Punteggio: " + bestScoreAtCurrentDepth);
                     currentDepth++;
                 } else {
@@ -274,7 +267,6 @@ public class AlphaBetaEngine {
 
             } catch (TimeoutException | InterruptedException | CancellationException e) {
                 System.out.println("ID: Timeout/Interruzione/Cancellazione. Uso il miglior risultato da D=" + (currentDepth - 1) + ".");
->>>>>>> 2fd9c7b893c1806ebcea104c9435aa9f2f2593be
                 for (Future<AlphaBetaResult> future : futures) {
                     future.cancel(true);
                 }

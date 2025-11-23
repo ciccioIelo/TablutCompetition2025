@@ -12,9 +12,9 @@ import it.unibo.ai.didattica.competition.tablut.domain.State.Pawn;
 import it.unibo.ai.didattica.competition.tablut.domain.State.Turn;
 
 /**
- * Stato del gioco ottimizzato per le performance (Fase 1 della Roadmap).
+ * Stato del gioco ottimizzato per le performance.
  * Implementa la logica completa di movimento e cattura delle regole Ashton Tablut.
- * * MODIFICATO: Aggiunto Zobrist Hashing per Transposition Table.
+ * Zobrist Hashing per Transposition Table.
  */
 public class FastTablutState extends State implements Serializable {
 
@@ -32,7 +32,6 @@ public class FastTablutState extends State implements Serializable {
     public int whitePawnsCount = 0;
     public int blackPawnsCount = 0;
 
-    // --------- INIZIO MODIFICHE ZOBRIST HASHING ---------
     private long zobristKey;
 
     // Tabella [riga][colonna][tipo_pedone]
@@ -52,8 +51,6 @@ public class FastTablutState extends State implements Serializable {
         }
         zobristTurnBlack = rand.nextLong();
     }
-    // --------- FINE MODIFICHE ZOBRIST HASHING ---------
-
 
     private static final java.util.Map<Pawn, Byte> PAWN_TO_BYTE = new java.util.HashMap<>();
     static {
@@ -105,7 +102,7 @@ public class FastTablutState extends State implements Serializable {
     public static FastTablutState fromState(State state) {
         FastTablutState fastState = new FastTablutState();
         fastState.turn = state.getTurn();
-        fastState.zobristKey = 0L; // MODIFICA ZOBRIST: Inizia da 0
+        fastState.zobristKey = 0L;
 
         for (int r = 0; r < BOARD_SIZE; r++) {
             for (int c = 0; c < BOARD_SIZE; c++) {
@@ -114,7 +111,6 @@ public class FastTablutState extends State implements Serializable {
 
                 fastState.set(r, c, bytePawn);
 
-                // MODIFICA ZOBRIST: Aggiorna l'hash iniziale
                 fastState.zobristKey ^= zobristTable[r][c][bytePawn];
 
                 if (pawn.equals(Pawn.WHITE)) {
@@ -128,7 +124,6 @@ public class FastTablutState extends State implements Serializable {
             }
         }
 
-        // MODIFICA ZOBRIST: Aggiungi il turno all'hash
         if (fastState.turn.equals(Turn.BLACK)) {
             fastState.zobristKey ^= zobristTurnBlack;
         }
@@ -145,17 +140,17 @@ public class FastTablutState extends State implements Serializable {
         newState.kingCol = this.kingCol;
         newState.whitePawnsCount = this.whitePawnsCount;
         newState.blackPawnsCount = this.blackPawnsCount;
-        newState.zobristKey = this.zobristKey; // MODIFICA ZOBRIST: Copia la chiave
+        newState.zobristKey = this.zobristKey;
         return newState;
     }
 
-    // MODIFICA ZOBRIST: Getter per la chiave
+    // ZOBRIST: Getter per la chiave
     public long getZobristKey() {
         return this.zobristKey;
     }
 
     // ----------------------------------------------------------------------
-    // LOGICA DI GIOCO OTTIMIZZATA (FASE 1)
+    // LOGICA DI GIOCO OTTIMIZZATA
     // ----------------------------------------------------------------------
 
     private boolean isPathClear(int r1, int c1, int r2, int c2, byte movingPawn) {
@@ -225,14 +220,14 @@ public class FastTablutState extends State implements Serializable {
         byte oldPawnAtFrom = get(rFrom, cFrom);
         byte newPawnAtFrom = (rFrom == THRONE[0] && cFrom == THRONE[1]) ? T : E;
         set(rFrom, cFrom, newPawnAtFrom);
-        // MODIFICA ZOBRIST: Aggiorna Zobrist per la casella 'from'
+        // Aggiorna Zobrist per la casella 'from'
         this.zobristKey ^= zobristTable[rFrom][cFrom][oldPawnAtFrom];
         this.zobristKey ^= zobristTable[rFrom][cFrom][newPawnAtFrom];
 
         byte oldPawnAtTo = get(rTo, cTo); // Sarà E
         byte newPawnAtTo = pawn;
         set(rTo, cTo, newPawnAtTo);
-        // MODIFICA ZOBRIST: Aggiorna Zobrist per la casella 'to'
+        // Aggiorna Zobrist per la casella 'to'
         this.zobristKey ^= zobristTable[rTo][cTo][oldPawnAtTo];
         this.zobristKey ^= zobristTable[rTo][cTo][newPawnAtTo];
 
@@ -264,7 +259,7 @@ public class FastTablutState extends State implements Serializable {
             if (this.turn.equals(Turn.WHITE)) this.turn = Turn.BLACK;
             else if (this.turn.equals(Turn.BLACK)) this.turn = Turn.WHITE;
 
-            this.zobristKey ^= zobristTurnBlack; // MODIFICA ZOBRIST: Aggiorna hash per il cambio turno
+            this.zobristKey ^= zobristTurnBlack;
         }
 
         return true;
@@ -313,7 +308,7 @@ public class FastTablutState extends State implements Serializable {
                 }
 
                 if (isWall) {
-                    // MODIFICA ZOBRIST: Aggiorna hash prima di rimuovere
+                    // Aggiorna hash prima di rimuovere
                     updateZobristKeyForRemoval(rOpp, cOpp);
 
                     if (get(rOpp, cOpp) == W) whitePawnsCount--;
@@ -370,16 +365,6 @@ public class FastTablutState extends State implements Serializable {
                     }
                 }
 
-                // NOTA: La logica di cattura del Re in Ashton è complessa.
-                // QUESTA E' UNA SEMPLIFICAZIONE. La vera regola Ashton dice:
-                // 1. Se Re sul Trono: servono 4 Neri.
-                // 2. Se Re adiacente al Trono: servono 3 Neri (sui 3 lati liberi).
-                // 3. Se Re su una Cittadella (impossibile atterrare, ma forse per mossa precedente?): 4 Neri.
-                // 4. Se Re altrove: 2 Neri (in linea, N-K-N) O (1 Nero e 1 Cittadella/Trono, N-K-T/C).
-
-                // La logica `wallCount` è più vicina alle regole "moderne" che Ashton.
-                // Manteniamo la logica `wallCount` per ora, è più semplice.
-                // Sostituiamo la logica di cattura del Re con quella ufficiale.
 
                 isKingCaptured = false; // Reset
 
@@ -422,7 +407,7 @@ public class FastTablutState extends State implements Serializable {
 
 
                 if (isKingCaptured) {
-                    // MODIFICA ZOBRIST: Aggiorna hash prima di rimuovere
+                    // Aggiorna hash prima di rimuovere
                     updateZobristKeyForRemoval(rOpp, cOpp);
 
                     set(rOpp, cOpp, E);

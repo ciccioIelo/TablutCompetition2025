@@ -9,7 +9,7 @@ import it.unibo.ai.didattica.competition.tablut.domain.State.Turn;
 
 
 /**
- * Agente Tablut modulare: gestisce I/O e delega la logica di ricerca (Alpha-Beta)
+ * Agente Tablut: gestisce I/O e delega la logica di ricerca (Alpha-Beta)
  * all'AlphaBetaEngine, iniettando i pesi.
  */
 public class MyTablutAgent extends TablutClient {

@@ -14,14 +14,6 @@ import it.unibo.ai.didattica.competition.tablut.domain.Action;
 import it.unibo.ai.didattica.competition.tablut.domain.FastTablutState;
 import it.unibo.ai.didattica.competition.tablut.domain.State.Turn;
 
-/**
- * Contiene la logica di ricerca Alpha-Beta, l'euristica e la gestione della Transposition Table.
- * * MODIFICATO (Fase 1): Utilizza Zobrist Hashing (long) per la Transposition Table.
- * * MODIFICATO (Fase 2): Implementata Quiescence Search.
- * * MODIFICATO (Fase 3): Euristica migliorata con "King Safety".
- * * MODIFICATO (Fase 4): Move Ordering basato sulla mossa migliore della TT.
- * * MODIFICATO (Fase 5): Aggiunto limite di profondità alla Quiescence Search.
- */
 public class AlphaBetaEngine {
 
     private static final int BOARD_SIZE = 9;
@@ -34,13 +26,11 @@ public class AlphaBetaEngine {
     private static final int INITIAL_ALPHA = MIN_VALUE - 1000;
     private static final int INITIAL_BETA = MAX_VALUE + 1000;
 
-    // --------- INIZIO MODIFICA FASE 5 ---------
     /**
      * Profondità massima per la ricerca di quiete.
      * Limita la ricerca di catture. Impostato a 2 per evitare timeout.
      */
     private static final int MAX_QUIESCENCE_DEPTH = 2;
-    // --------- FINE MODIFICA FASE 5 ---------
 
 
     // VARIABILE PER I PESI (INIETTABILI)
@@ -106,7 +96,6 @@ public class AlphaBetaEngine {
     private static final int N_CPUS = Runtime.getRuntime().availableProcessors();
 
 
-    // COSTRUTTORE AGGIORNATO: ACCETTA I PESI
     public AlphaBetaEngine(Turn player, double[] weights) {
         this.player = player;
         this.weights = weights; // Usa i pesi iniettati
@@ -115,7 +104,7 @@ public class AlphaBetaEngine {
     }
 
     // ----------------------------------------------------------------------
-    // 1. GENERAZIONE E ORDINAMENTO DELLE MOSSE (METODI REINTEGRATI)
+    // 1. GENERAZIONE E ORDINAMENTO DELLE MOSSE
     // ----------------------------------------------------------------------
 
     private List<Action> getLegalMoves(FastTablutState state) {
@@ -304,12 +293,10 @@ public class AlphaBetaEngine {
             return new AlphaBetaResult(MIN_VALUE - depthRemaining, null);
         }
 
-        // --------- INIZIO MODIFICA FASE 5 ---------
         if (depthRemaining == 0) {
             // Chiama quiescence con la profondità massima di quiete
             return quiescenceSearch(state, alpha, beta, timeLimit, MAX_QUIESCENCE_DEPTH);
         }
-        // --------- FINE MODIFICA FASE 5 ---------
 
         int oldAlpha = alpha;
 
@@ -404,12 +391,10 @@ public class AlphaBetaEngine {
             return new AlphaBetaResult(MIN_VALUE - depthRemaining, null);
         }
 
-        // --------- INIZIO MODIFICA FASE 5 ---------
         if (depthRemaining == 0) {
             // Chiama quiescence con la profondità massima di quiete
             return quiescenceSearch(state, alpha, beta, timeLimit, MAX_QUIESCENCE_DEPTH);
         }
-        // --------- FINE MODIFICA FASE 5 ---------
 
 
         int oldBeta = beta;
@@ -495,7 +480,7 @@ public class AlphaBetaEngine {
 
 
     // ----------------------------------------------------------------------
-    // 5. FUNZIONE DI QUIETE (MODIFICATA FASE 5)
+    // 5. FUNZIONE DI QUIETE
     // ----------------------------------------------------------------------
 
     /**
@@ -514,12 +499,10 @@ public class AlphaBetaEngine {
             return new AlphaBetaResult(MIN_VALUE);
         }
 
-        // --------- INIZIO MODIFICA FASE 5 ---------
         // Se la profondità di quiete è esaurita, ci fermiamo e valutiamo
         if (depth == 0) {
             return new AlphaBetaResult(evaluateState(state));
         }
-        // --------- FINE MODIFICA FASE 5 ---------
 
 
         int standPatScore = evaluateState(state);
@@ -542,13 +525,11 @@ public class AlphaBetaEngine {
             return new AlphaBetaResult(standPatScore); // Posizione tranquilla
         }
 
-        // TODO: Ordinare le mosse di cattura (MVV-LVA)
 
         for (Action action : captureMoves) {
             FastTablutState nextState = state.clone();
             if (!nextState.applyMove(action)) continue;
 
-            // MODIFICA FASE 5: Passa depth - 1
             AlphaBetaResult result = quiescenceSearch(nextState, alpha, beta, timeLimit, depth - 1);
 
             if (state.getTurn().equals(Turn.WHITE)) { // MAX
@@ -594,7 +575,7 @@ public class AlphaBetaEngine {
 
 
     // ----------------------------------------------------------------------
-    // 6. FUNZIONE EURISTICA (MODIFICATA FASE 3)
+    // 6. FUNZIONE EURISTICA
     // ----------------------------------------------------------------------
 
     private boolean containsCoord(List<int[]> list, int r, int c) {

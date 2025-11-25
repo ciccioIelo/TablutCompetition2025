@@ -28,9 +28,19 @@ public class MyTablutAgent extends TablutClient {
         System.out.println("Agente " + name + " (" + player + ") inizializzato con motore AI modulare.");
     }
 
+    public MyTablutAgent(String player, String name, int timeout, String ipAddress) throws IOException {
+        super(player, name, timeout, ipAddress);
+        this.timeoutInSeconds = timeout;
+
+        double[] initialWeights = HeuristicWeights.INITIAL_WEIGHTS;
+        this.aiEngine = new AlphaBetaEngine(this.getPlayer(), initialWeights);
+
+        System.out.println("Agente " + name + " (" + player + ") inizializzato con motore AI modulare.");
+    }
+
     public static void main(String[] args) throws IOException {
         String role = args[0];
-        String name = "MyTablutAgent";
+        String name = "4bits";
         int timeout = 59;
 
         if (args.length >= 2) {
@@ -49,8 +59,7 @@ public class MyTablutAgent extends TablutClient {
 
         System.out.println("Inizializzazione di " + name + " come " + role + " con timeout " + timeout + "s @ " + ip);
 
-        TablutClient client = new MyTablutAgent(role, name, timeout);
-        client.run();
+        TablutClient client = new MyTablutAgent(role, name, timeout, ip);        client.run();
     }
 
     @Override
